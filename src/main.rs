@@ -20,7 +20,6 @@ use clap::Parser;
 mod app;
 mod ui;
 
-#[cfg(any(test, debug_assertions))]
 mod test_db;
 
 use app::{App, FilterMode};
@@ -33,8 +32,7 @@ struct Cli {
     /// Path to the SQLite database file
     path: Option<String>,
 
-    /// Start with an in-memory demo database (debug builds only)
-    #[cfg(debug_assertions)]
+    /// Start with an in-memory demo database
     #[arg(long)]
     demo: bool,
 }
@@ -50,7 +48,6 @@ fn main() -> io::Result<()> {
     result
 }
 
-#[cfg(debug_assertions)]
 fn build_app(cli: &Cli) -> App {
     if cli.demo && cli.path.is_some() {
         eprintln!("Error: cannot use --demo with a database path");
@@ -76,22 +73,6 @@ fn build_app(cli: &Cli) -> App {
         }
     } else {
         eprintln!("Usage: squeal <sqlite-file> or squeal --demo");
-        std::process::exit(1);
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn build_app(cli: &Cli) -> App {
-    if let Some(path) = cli.path.as_deref() {
-        match App::new(path) {
-            Ok(app) => app,
-            Err(e) => {
-                eprintln!("Error opening database: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        eprintln!("Usage: squeal <sqlite-file>");
         std::process::exit(1);
     }
 }

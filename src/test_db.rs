@@ -176,9 +176,8 @@ impl TestDb {
 
     /// Create an in-memory demo database with a realistic multi-table schema.
     ///
-    /// This is intended for debug builds and integration testing of complex features
-    /// such as filtering, sorting, and pagination.
-    #[cfg(any(test, debug_assertions))]
+    /// This is intended for integration testing of complex features such as filtering,
+    /// sorting, and pagination. It is also exposed via the `--demo` CLI flag.
     pub fn in_memory_demo() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
 
