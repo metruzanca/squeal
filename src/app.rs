@@ -665,13 +665,6 @@ impl App {
         Ok(())
     }
 
-    pub fn clear_filter_for_col(&mut self, col: usize) {
-        if col < self.filters.len() {
-            self.filters[col] = None;
-            let _ = self.apply_filters_and_sort();
-        }
-    }
-
     pub fn delete_current_filter(&mut self) {
         if self.filter_col < self.filters.len() {
             self.filters[self.filter_col] = None;
@@ -687,6 +680,15 @@ impl App {
 mod tests {
     use super::*;
     use crate::test_db;
+
+    impl App {
+        pub fn clear_filter_for_col(&mut self, col: usize) {
+            if col < self.filters.len() {
+                self.filters[col] = None;
+                let _ = self.apply_filters_and_sort();
+            }
+        }
+    }
 
     #[test]
     fn test_app_new_loads_tables() {
