@@ -8,10 +8,12 @@ A lightweight TUI SQLite database viewer built in Rust.
 
 - **Browse any SQLite database** — open `.db` or `.sqlite` files instantly
 - **Split-pane layout** — table list on the left, data on the right
-- **Vim-style navigation** — `j`/`k` to move, `h`/`l` to focus/unfocus the data pane
+- **Vim-style navigation** — Supports vim movement natively, as well as arrow keys.
 - **Lazy row loading** — loads 100 rows at a time, fetches more on demand as you scroll
-- **Horizontal scrolling** — wide tables with many columns are automatically scrollable
-- **All SQLite types** — correctly handles `NULL`, `INTEGER`, `REAL`, `TEXT`, and `BLOB`
+- **Column filtering** — filter by exact match or substring contains per column
+- **Column sorting** — sort any column ascending or descending
+- **Foreign key record view** — press `Enter` on a row to view related records from referenced tables
+- **Help overlay** — press `?` anytime to see all available keybindings
 
 ## Installation
 
