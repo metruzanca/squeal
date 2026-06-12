@@ -20,9 +20,10 @@ A lightweight TUI SQLite database viewer built in Rust.
 ## Installation
 
 ```bash
+# Install Binary directly via github
+cargo binstall --git https://github.com/metruzanca/squeal --target squeal
+# Install from github via local build
 cargo install --git https://github.com/metruzanca/squeal
-# or
-cargo install --path .
 ```
 
 ## Usage
@@ -31,6 +32,7 @@ Open a database file:
 
 ```bash
 squeal my-database.db
+squeal --demo # to preview with dummy data
 ```
 
 ## Tech Stack
