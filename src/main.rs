@@ -1,3 +1,9 @@
+//! Entry point for the `squeal` TUI application.
+//!
+//! This file sets up the terminal (raw mode + alternate screen), parses CLI arguments, wires
+//! together the [`App`] state and the [`ui`] renderer, and runs the main input loop. It maps
+//! keyboard events to application commands (table selection, focus/unfocus, scrolling, and quit).
+
 use std::io::{self, stdout, Stdout};
 
 use crossterm::{

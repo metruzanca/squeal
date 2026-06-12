@@ -1,3 +1,10 @@
+//! Application state and business logic.
+//!
+//! This module holds the [`App`] struct, which manages the SQLite connection, the list of
+//! database tables, the currently loaded table data, and all navigation/focus state. It also
+//! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
+//! scrolling both horizontally and vertically within the data panel.
+
 use ratatui::widgets::TableState;
 use rusqlite::{Connection, Result as SqliteResult};
 

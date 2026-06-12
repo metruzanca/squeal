@@ -1,3 +1,11 @@
+//! User interface rendering.
+//!
+//! This module is responsible for drawing the TUI layout. It splits the terminal into a
+//! left-hand table list and a right-hand data panel, computes column widths from the actual
+//! cell contents (clamped to a maximum), and handles horizontal column scrolling when the table
+//! is wider than the available space. It also provides text-truncation helpers so that oversized
+//! cell values are shown with an ellipsis.
+
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
