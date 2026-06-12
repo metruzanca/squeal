@@ -20,8 +20,8 @@ jobs:
       - name: Extract latest changelog section
         id: notes
         run: |
-          # Extract the latest version section (between first '## [' and the next '## [' or EOF)
-          body=$(awk '/^## \[/ { if (found) exit; found=1; next } found { print }' CHANGELOG.md)
+          # Skip the [Unreleased] section and extract the first real version section
+          body=$(awk '/^## \[Unreleased\]/ { next } /^## \[/ { if (found) exit; found=1; next } found { print }' CHANGELOG.md | sed '/^\[.*\]: /d')
           # Handle multiline output for GitHub Actions
           echo "body<<EOF" >> "$GITHUB_OUTPUT"
           echo "$body" >> "$GITHUB_OUTPUT"
