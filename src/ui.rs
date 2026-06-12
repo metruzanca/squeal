@@ -9,17 +9,21 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, List, ListItem, Row, Table},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
 
 use crate::app::App;
 
 const MAX_COL_WIDTH: u16 = 30;
-const COL_BG_EVEN: Color = Color::Indexed(234); // very dark gray
-const COL_BG_ODD: Color = Color::Indexed(236);  // slightly lighter gray
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let outer_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Fill(1), Constraint::Length(1)])
+        .split(frame.size());
+
     let max_table_name_len = app
         .tables
         .iter()
@@ -31,7 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Fill(1)])
-        .split(frame.size());
+        .split(outer_layout[0]);
 
     // Left column: Table list
     let items: Vec<ListItem> = app
@@ -103,9 +107,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|(i, h)| {
                 let width = visible_widths[i] as usize;
                 let truncated = truncate_with_ellipsis(h, width);
-                let col_bg = if (app.h_scroll + i) % 2 == 0 { COL_BG_EVEN } else { COL_BG_ODD };
                 Cell::from(truncated)
-                    .style(Style::default().fg(Color::Yellow).bg(col_bg).add_modifier(Modifier::BOLD))
+                    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             })
             .collect();
         let header =
@@ -122,8 +125,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .map(|(i, text)| {
                         let width = visible_widths[i] as usize;
                         let truncated = truncate_with_ellipsis(text, width);
-                        let col_bg = if (app.h_scroll + i) % 2 == 0 { COL_BG_EVEN } else { COL_BG_ODD };
-                        Cell::from(truncated).style(Style::default().bg(col_bg))
+                        Cell::from(truncated)
                     })
                     .collect();
                 Row::new(cells)
@@ -163,6 +165,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .block(Block::default().title("Data").borders(Borders::ALL));
         frame.render_widget(paragraph, main_layout[1]);
     }
+
+    // Keybind reference bar.
+    // Controls that don't change between screens are left-aligned before those that do.
+    let keybinds = if app.table_focused {
+        vec![
+            Span::raw(" q"),
+            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Esc"),
+            Span::styled(": Unfocus ", Style::default().fg(Color::DarkGray)),
+            Span::raw("j/k"),
+            Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
+            Span::raw("h/l"),
+            Span::styled(": Scroll Left/Right", Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        vec![
+            Span::raw(" q"),
+            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::raw("j/k"),
+            Span::styled(": Navigate ", Style::default().fg(Color::DarkGray)),
+            Span::raw("l"),
+            Span::styled(": Focus Table", Style::default().fg(Color::DarkGray)),
+        ]
+    };
+    let keybind_line = Line::from(keybinds);
+    let keybind_bar = Paragraph::new(keybind_line);
+    frame.render_widget(keybind_bar, outer_layout[1]);
 }
 
 pub fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
