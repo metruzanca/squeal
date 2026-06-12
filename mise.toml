@@ -1,3 +1,8 @@
 [tasks.install-local]
 description = "Install the package to PATH"
 run = "cargo install --path ."
+
+
+[tasks.demo]
+description = "Run the demo database"
+run = "cargo run -- --demo"

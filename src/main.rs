@@ -19,6 +19,8 @@ use clap::Parser;
 
 mod app;
 mod ui;
+
+#[cfg(any(test, debug_assertions))]
 mod test_db;
 
 use app::App;
@@ -31,7 +33,8 @@ struct Cli {
     /// Path to the SQLite database file
     path: Option<String>,
 
-    /// Start with an in-memory demo database
+    /// Start with an in-memory demo database (debug builds only)
+    #[cfg(debug_assertions)]
     #[arg(long)]
     demo: bool,
 }
@@ -39,13 +42,23 @@ struct Cli {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
+    let mut app = build_app(&cli);
+
+    let mut terminal = setup_terminal()?;
+    let result = run(&mut terminal, &mut app);
+    restore_terminal(&mut terminal)?;
+    result
+}
+
+#[cfg(debug_assertions)]
+fn build_app(cli: &Cli) -> App {
     if cli.demo && cli.path.is_some() {
         eprintln!("Error: cannot use --demo with a database path");
         std::process::exit(1);
     }
 
-    let mut app = if cli.demo {
-        let conn = test_db::TestDb::in_memory_simple();
+    if cli.demo {
+        let conn = test_db::TestDb::in_memory_demo();
         match App::from_connection(conn) {
             Ok(app) => app,
             Err(e) => {
@@ -53,8 +66,8 @@ fn main() -> io::Result<()> {
                 std::process::exit(1);
             }
         }
-    } else if let Some(path) = cli.path {
-        match App::new(&path) {
+    } else if let Some(path) = cli.path.as_deref() {
+        match App::new(path) {
             Ok(app) => app,
             Err(e) => {
                 eprintln!("Error opening database: {}", e);
@@ -64,12 +77,23 @@ fn main() -> io::Result<()> {
     } else {
         eprintln!("Usage: squeal <sqlite-file> or squeal --demo");
         std::process::exit(1);
-    };
+    }
+}
 
-    let mut terminal = setup_terminal()?;
-    let result = run(&mut terminal, &mut app);
-    restore_terminal(&mut terminal)?;
-    result
+#[cfg(not(debug_assertions))]
+fn build_app(cli: &Cli) -> App {
+    if let Some(path) = cli.path.as_deref() {
+        match App::new(path) {
+            Ok(app) => app,
+            Err(e) => {
+                eprintln!("Error opening database: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("Usage: squeal <sqlite-file>");
+        std::process::exit(1);
+    }
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {

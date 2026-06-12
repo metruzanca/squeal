@@ -173,11 +173,163 @@ impl TestDb {
         .unwrap();
         conn
     }
+
+    /// Create an in-memory demo database with a realistic multi-table schema.
+    ///
+    /// This is intended for debug builds and integration testing of complex features
+    /// such as filtering, sorting, and pagination.
+    #[cfg(any(test, debug_assertions))]
+    pub fn in_memory_demo() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+
+        conn.execute(
+            "CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                email TEXT,
+                age INTEGER,
+                country TEXT,
+                registered_at TEXT
+            )",
+            [],
+        )
+        .unwrap();
+
+        let first_names = [
+            "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry", "Ivy", "Jack",
+            "Karen", "Leo", "Mia", "Nathan", "Olivia", "Paul", "Quinn", "Rachel", "Sam", "Tina",
+        ];
+        let last_names = [
+            "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+            "Rodriguez", "Martinez", "Anderson", "Taylor", "Thomas", "Jackson", "White",
+            "Harris", "Martin", "Thompson", "Garcia", "Clark",
+        ];
+        let countries = [
+            "USA", "UK", "Canada", "Germany", "France", "Japan", "Australia", "Brazil",
+            "India", "Spain",
+        ];
+
+        for i in 1..=100 {
+            let first = first_names[i % first_names.len()];
+            let last = last_names[i % last_names.len()];
+            let email = format!("{}.{}@example.com", first.to_lowercase(), last.to_lowercase());
+            let age = 18 + (i % 63) as i32;
+            let country = countries[i % countries.len()];
+            let registered_at = format!("2023-{:02}-{:02}", 1 + (i % 12), 1 + (i % 28));
+
+            conn.execute(
+                "INSERT INTO users (first_name, last_name, email, age, country, registered_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![first, last, email, age, country, registered_at],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "CREATE TABLE categories (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT
+            )",
+            [],
+        )
+        .unwrap();
+
+        let categories = [
+            ("Electronics", "Gadgets and electronic devices"),
+            ("Clothing", "Apparel and fashion items"),
+            ("Books", "Physical and digital books"),
+            ("Home", "Home and garden supplies"),
+            ("Sports", "Sports and outdoor equipment"),
+            ("Food", "Food and beverages"),
+            ("Toys", "Toys and games"),
+            ("Automotive", "Car parts and accessories"),
+            ("Health", "Health and wellness products"),
+            ("Music", "Musical instruments and media"),
+        ];
+
+        for (name, desc) in &categories {
+            conn.execute(
+                "INSERT INTO categories (name, description) VALUES (?1, ?2)",
+                rusqlite::params![name, desc],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "CREATE TABLE products (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                category_id INTEGER,
+                price REAL NOT NULL,
+                stock INTEGER,
+                rating REAL,
+                description TEXT,
+                FOREIGN KEY (category_id) REFERENCES categories(id)
+            )",
+            [],
+        )
+        .unwrap();
+
+        for i in 1..=200 {
+            let name = format!("Product {}", i);
+            let category_id = 1 + (i % 10) as i32;
+            let price = 1.0 + (i as f64 * 3.7) % 999.99;
+            let stock = (i % 500) as i32;
+            let rating = 1.0 + (i as f64 * 0.37) % 4.0;
+            let description = format!("Description for product {} in category {}", i, category_id);
+
+            conn.execute(
+                "INSERT INTO products (name, category_id, price, stock, rating, description)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![name, category_id, price, stock, rating, description],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                total REAL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (product_id) REFERENCES products(id)
+            )",
+            [],
+        )
+        .unwrap();
+
+        let statuses = ["pending", "completed", "cancelled", "shipped", "refunded"];
+
+        for i in 1..=1000 {
+            let user_id = 1 + (i % 100) as i32;
+            let product_id = 1 + (i % 200) as i32;
+            let quantity = 1 + (i % 10) as i32;
+            let status = statuses[i % statuses.len()];
+            let order_date = format!("2024-{:02}-{:02}", 1 + (i % 12), 1 + (i % 28));
+            let total = (quantity as f64) * (1.0 + (i as f64 * 3.7) % 999.99);
+
+            conn.execute(
+                "INSERT INTO orders (user_id, product_id, quantity, status, order_date, total)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![user_id, product_id, quantity, status, order_date, total],
+            )
+            .unwrap();
+        }
+
+        conn
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Result as SqliteResult;
 
     #[test]
     fn test_simple() {
@@ -217,5 +369,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_in_memory_demo() {
+        let conn = TestDb::in_memory_demo();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<SqliteResult<Vec<String>>>()
+            .unwrap();
+        assert_eq!(tables, vec!["categories", "orders", "products", "users"]);
+
+        let user_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_count, 100);
+
+        let order_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(order_count, 1000);
     }
 }
