@@ -127,6 +127,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
                     KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
                     KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
+                    KeyCode::PageDown => app.page_down(),
+                    KeyCode::PageUp => app.page_up(),
                     _ => {}
                 }
             } else {

@@ -1,4 +1,4 @@
 # Rules
 - Before committing make sure build compiles.
-- Don't commit unless asked by a human.
+- Never commit changes unless instructed to explicitly.
 - Commit using conventional commits.

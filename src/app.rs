@@ -19,6 +19,8 @@ pub struct App {
     pub table_focused: bool,
     pub needs_h_scroll: bool,
     pub has_more_rows: bool,
+    pub page_size: usize,
+    pub scroll_offset: usize,
 }
 
 impl App {
@@ -46,6 +48,8 @@ impl App {
             table_focused: false,
             needs_h_scroll: false,
             has_more_rows: false,
+            page_size: 1,
+            scroll_offset: 0,
         };
 
         if !app.tables.is_empty() {
@@ -109,6 +113,7 @@ impl App {
         self.rows = rows;
         self.has_more_rows = self.rows.len() == 100;
         self.h_scroll = 0;
+        self.scroll_offset = 0;
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
         } else {
@@ -153,6 +158,7 @@ impl App {
     pub fn focus_table(&mut self) {
         if !self.headers.is_empty() {
             self.table_focused = true;
+            self.scroll_offset = 0;
             if !self.rows.is_empty() {
                 self.table_state.select(Some(0));
             }
@@ -165,6 +171,19 @@ impl App {
         self.h_scroll = 0;
     }
 
+    fn ensure_cursor_visible(&mut self) {
+        if let Some(selected) = self.table_state.selected() {
+            if self.page_size == 0 {
+                return;
+            }
+            if selected >= self.scroll_offset + self.page_size {
+                self.scroll_offset = selected.saturating_sub(self.page_size - 1);
+            } else if selected < self.scroll_offset {
+                self.scroll_offset = selected;
+            }
+        }
+    }
+
     pub fn scroll_table_down(&mut self) {
         if let Some(selected) = self.table_state.selected() {
             if selected + 1 >= self.rows.len() && self.has_more_rows {
@@ -172,6 +191,7 @@ impl App {
             }
             let next = (selected + 1).min(self.rows.len().saturating_sub(1));
             self.table_state.select(Some(next));
+            self.ensure_cursor_visible();
         }
     }
 
@@ -179,7 +199,53 @@ impl App {
         if let Some(selected) = self.table_state.selected() {
             let prev = selected.saturating_sub(1);
             self.table_state.select(Some(prev));
+            self.ensure_cursor_visible();
         }
+    }
+
+    pub fn page_down(&mut self) {
+        if self.page_size == 0 {
+            return;
+        }
+        let max_offset = if self.rows.len() == 0 {
+            0
+        } else {
+            ((self.rows.len() - 1) / self.page_size) * self.page_size
+        };
+        if self.scroll_offset >= max_offset {
+            return;
+        }
+        let target = self.scroll_offset + self.page_size;
+        while self.rows.len() <= target + self.page_size && self.has_more_rows {
+            let _ = self.fetch_more_rows();
+        }
+        let max_offset = if self.rows.len() == 0 {
+            0
+        } else {
+            ((self.rows.len() - 1) / self.page_size) * self.page_size
+        };
+        let new_offset = target.min(max_offset);
+        let end = self.rows.len().saturating_sub(1);
+        if let Some(selected) = self.table_state.selected() {
+            let visual_pos = selected.saturating_sub(self.scroll_offset);
+            let new_selected = (new_offset + visual_pos).min(end);
+            self.table_state.select(Some(new_selected));
+        }
+        self.scroll_offset = new_offset;
+    }
+
+    pub fn page_up(&mut self) {
+        if self.page_size == 0 || self.scroll_offset == 0 {
+            return;
+        }
+        let new_offset = self.scroll_offset.saturating_sub(self.page_size);
+        let end = self.rows.len().saturating_sub(1);
+        if let Some(selected) = self.table_state.selected() {
+            let visual_pos = selected.saturating_sub(self.scroll_offset);
+            let new_selected = (new_offset + visual_pos).min(end);
+            self.table_state.select(Some(new_selected));
+        }
+        self.scroll_offset = new_offset;
     }
 
     pub fn h_scroll_left(&mut self) {
@@ -409,5 +475,159 @@ mod tests {
         app.scroll_table_down();
         assert_eq!(app.table_state.selected(), Some(1)); // stays at bottom
         assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_page_down_scrolls_view_and_preserves_visual_position() {
+        let path = "/tmp/squeal_test_page_down.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        // visual position 0 preserved
+        app.page_down();
+        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.table_state.selected(), Some(10));
+
+        app.page_down();
+        assert_eq!(app.scroll_offset, 20);
+        assert_eq!(app.table_state.selected(), Some(20));
+    }
+
+    #[test]
+    fn test_page_up_preserves_visual_position() {
+        let path = "/tmp/squeal_test_page_up.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+        app.scroll_offset = 50;
+        app.table_state.select(Some(55));
+
+        app.page_up();
+        assert_eq!(app.scroll_offset, 40);
+        assert_eq!(app.table_state.selected(), Some(45)); // visual pos 5 preserved
+    }
+
+    #[test]
+    fn test_page_down_clamps_cursor_on_partial_page() {
+        // 15 rows with page_size=10: pages 0-9, 10-14
+        let path = "/tmp/squeal_test_page_down_clamp.db";
+        test_db::TestDb::large(path, 15);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+        app.scroll_offset = 0;
+        app.table_state.select(Some(9)); // visual pos 9
+
+        app.page_down();
+        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.table_state.selected(), Some(14)); // clamped to last row
+    }
+
+    #[test]
+    fn test_page_up_at_top_is_noop() {
+        let path = "/tmp/squeal_test_page_up_clamp.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+        app.scroll_offset = 0;
+        app.table_state.select(Some(5));
+
+        app.page_up();
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.table_state.selected(), Some(5)); // no change
+    }
+
+    #[test]
+    fn test_page_down_to_last_page_preserves_visual_position() {
+        let path = "/tmp/squeal_test_small_final.db";
+        test_db::TestDb::large(path, 25);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        // Page 1: 0-9
+        app.page_down();
+        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.table_state.selected(), Some(10));
+
+        // Page 2: 10-19
+        app.page_down();
+        assert_eq!(app.scroll_offset, 20);
+        assert_eq!(app.table_state.selected(), Some(20)); // visual pos 0 preserved
+    }
+
+    #[test]
+    fn test_page_up_from_last_page_preserves_visual_position() {
+        let path = "/tmp/squeal_test_up_from_bottom.db";
+        test_db::TestDb::large(path, 25);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        // Page 1: 0-9
+        app.page_down();
+        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.table_state.selected(), Some(10));
+
+        // Page 2: 10-19
+        app.page_down();
+        assert_eq!(app.scroll_offset, 20);
+        assert_eq!(app.table_state.selected(), Some(20));
+
+        // Page 1: visual pos 0 preserved
+        app.page_up();
+        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.table_state.selected(), Some(10));
+    }
+
+    #[test]
+    fn test_page_down_from_last_page_is_noop() {
+        let path = "/tmp/squeal_test_page_down_noop.db";
+        test_db::TestDb::large(path, 25);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        app.page_down(); // 10
+        app.page_down(); // 20 (last page)
+        app.page_down(); // should be no-op
+        assert_eq!(app.scroll_offset, 20);
+        assert_eq!(app.table_state.selected(), Some(20));
+    }
+
+    #[test]
+    fn test_page_up_from_partial_page_preserves_visual_position() {
+        // 15 rows with page_size=10: pages 0-9, 10-14
+        let path = "/tmp/squeal_test_up_from_partial.db";
+        test_db::TestDb::large(path, 15);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        app.page_down(); // offset 10
+        app.table_state.select(Some(12)); // visual pos 2
+        app.page_up(); // offset 0
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.table_state.selected(), Some(2)); // visual pos 2 preserved
+    }
+
+    #[test]
+    fn test_scroll_table_down_keeps_cursor_visible() {
+        let path = "/tmp/squeal_test_cursor_vis.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.page_size = 10;
+
+        // Move cursor to row 15
+        for _ in 0..15 {
+            app.scroll_table_down();
+        }
+        assert_eq!(app.table_state.selected(), Some(15));
+        assert_eq!(app.scroll_offset, 6); // window shifted to keep cursor visible
     }
 }

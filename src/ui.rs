@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -120,8 +120,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let header =
             Row::new(header_cells).style(Style::default().add_modifier(Modifier::UNDERLINED));
 
+        app.page_size = (main_layout[1].height.saturating_sub(3)) as usize;
+        let end = (app.scroll_offset + app.page_size).min(app.rows.len());
+
         let rows: Vec<Row> = app
-            .rows
+            .rows[app.scroll_offset..end]
             .iter()
             .map(|row_data| {
                 let visible_cells = &row_data[app.h_scroll..end_col];
@@ -169,7 +172,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             table
         };
-        frame.render_stateful_widget(table, main_layout[1], &mut app.table_state);
+
+        let mut render_state = TableState::new().with_selected(
+            app.table_state.selected().and_then(|s| {
+                if s >= app.scroll_offset && s < end {
+                    Some(s - app.scroll_offset)
+                } else {
+                    None
+                }
+            }),
+        );
+        frame.render_stateful_widget(table, main_layout[1], &mut render_state);
     } else {
         let paragraph = ratatui::widgets::Paragraph::new("No table selected or table is empty")
             .block(Block::default().title("Data").borders(Borders::ALL));
@@ -186,6 +199,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Span::styled(": Table List ", Style::default().fg(Color::DarkGray)),
             Span::raw("j/k"),
             Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
+            Span::raw("PgUp/PgDn"),
+            Span::styled(": Page ", Style::default().fg(Color::DarkGray)),
             Span::raw("h/l"),
             Span::styled(": Scroll Left/Right", Style::default().fg(Color::DarkGray)),
         ]
