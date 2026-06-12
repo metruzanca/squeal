@@ -16,6 +16,8 @@ use ratatui::{
 use crate::app::App;
 
 const MAX_COL_WIDTH: u16 = 30;
+const COL_BG_EVEN: Color = Color::Indexed(234); // very dark gray
+const COL_BG_ODD: Color = Color::Indexed(236);  // slightly lighter gray
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let max_table_name_len = app
@@ -101,8 +103,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|(i, h)| {
                 let width = visible_widths[i] as usize;
                 let truncated = truncate_with_ellipsis(h, width);
+                let col_bg = if (app.h_scroll + i) % 2 == 0 { COL_BG_EVEN } else { COL_BG_ODD };
                 Cell::from(truncated)
-                    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    .style(Style::default().fg(Color::Yellow).bg(col_bg).add_modifier(Modifier::BOLD))
             })
             .collect();
         let header =
@@ -119,7 +122,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .map(|(i, text)| {
                         let width = visible_widths[i] as usize;
                         let truncated = truncate_with_ellipsis(text, width);
-                        Cell::from(truncated)
+                        let col_bg = if (app.h_scroll + i) % 2 == 0 { COL_BG_EVEN } else { COL_BG_ODD };
+                        Cell::from(truncated).style(Style::default().bg(col_bg))
                     })
                     .collect();
                 Row::new(cells)
