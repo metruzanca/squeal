@@ -46,6 +46,10 @@ pub struct App {
     pub scroll_offset: usize,
     pub modal_open: bool,
     pub modal_records: Vec<RelatedRecord>,
+    pub modal_selected: usize,
+    pub modal_h_scroll: usize,
+    pub modal_needs_h_scroll: bool,
+    pub help_open: bool,
 }
 
 impl App {
@@ -77,6 +81,10 @@ impl App {
             scroll_offset: 0,
             modal_open: false,
             modal_records: Vec::new(),
+            modal_selected: 0,
+            modal_h_scroll: 0,
+            modal_needs_h_scroll: false,
+            help_open: false,
         };
 
         if !app.tables.is_empty() {
@@ -375,12 +383,78 @@ impl App {
         }
         self.modal_records = records;
         self.modal_open = true;
+        self.modal_selected = 0;
+        self.modal_h_scroll = 0;
+        self.modal_needs_h_scroll = false;
         Ok(())
     }
 
     pub fn close_modal(&mut self) {
         self.modal_open = false;
         self.modal_records.clear();
+        self.modal_selected = 0;
+        self.modal_h_scroll = 0;
+        self.modal_needs_h_scroll = false;
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.help_open = !self.help_open;
+    }
+
+    pub fn close_help(&mut self) {
+        self.help_open = false;
+    }
+
+    pub fn modal_scroll_down(&mut self) {
+        if self.modal_records.is_empty() {
+            return;
+        }
+        self.modal_selected = (self.modal_selected + 1) % self.modal_records.len();
+    }
+
+    pub fn modal_scroll_up(&mut self) {
+        if self.modal_records.is_empty() {
+            return;
+        }
+        self.modal_selected = if self.modal_selected == 0 {
+            self.modal_records.len() - 1
+        } else {
+            self.modal_selected - 1
+        };
+    }
+
+    pub fn modal_h_scroll_left(&mut self) {
+        if self.modal_needs_h_scroll && self.modal_h_scroll > 0 {
+            self.modal_h_scroll -= 1;
+        }
+    }
+
+    pub fn modal_h_scroll_right(&mut self) {
+        if self.modal_records.is_empty() {
+            return;
+        }
+        let max_cols = self
+            .modal_records
+            .iter()
+            .map(|r| r.headers.len())
+            .max()
+            .unwrap_or(0);
+        if self.modal_needs_h_scroll && self.modal_h_scroll + 1 < max_cols {
+            self.modal_h_scroll += 1;
+        }
+    }
+
+    pub fn modal_select_table(&mut self) {
+        if self.modal_records.is_empty() {
+            self.close_modal();
+            return;
+        }
+        let target_table = self.modal_records[self.modal_selected].table_name.clone();
+        self.close_modal();
+        if let Some(idx) = self.tables.iter().position(|t| t == &target_table) {
+            self.selected = idx;
+            let _ = self.load_table(idx);
+        }
     }
 }
 

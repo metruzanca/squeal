@@ -118,12 +118,24 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
         if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
             if key.code == KeyCode::Char('q') {
                 break;
+            } else if app.help_open {
+                if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
+                    app.close_help();
+                }
             } else if app.modal_open {
-                if key.code == KeyCode::Esc {
-                    app.close_modal();
+                match key.code {
+                    KeyCode::Esc => app.close_modal(),
+                    KeyCode::Char('j') | KeyCode::Down => app.modal_scroll_down(),
+                    KeyCode::Char('k') | KeyCode::Up => app.modal_scroll_up(),
+                    KeyCode::Char('h') | KeyCode::Left => app.modal_h_scroll_left(),
+                    KeyCode::Char('l') | KeyCode::Right => app.modal_h_scroll_right(),
+                    KeyCode::Enter => app.modal_select_table(),
+                    _ => {}
                 }
             } else if key.code == KeyCode::Esc {
                 app.unfocus_table();
+            } else if key.code == KeyCode::Char('?') {
+                app.toggle_help();
             } else if app.table_focused {
                 match key.code {
                     KeyCode::Tab => app.unfocus_table(),
@@ -138,7 +150,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                 }
             } else {
                 match key.code {
-                    KeyCode::Tab => app.focus_table(),
+                    KeyCode::Tab | KeyCode::Enter => app.focus_table(),
                     KeyCode::Char('j') | KeyCode::Down => app.next(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous(),
                     _ => {}
