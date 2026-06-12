@@ -18,6 +18,7 @@ pub struct App {
     pub table_state: TableState,
     pub table_focused: bool,
     pub needs_h_scroll: bool,
+    pub has_more_rows: bool,
 }
 
 impl App {
@@ -44,6 +45,7 @@ impl App {
             table_state: TableState::new(),
             table_focused: false,
             needs_h_scroll: false,
+            has_more_rows: false,
         };
 
         if !app.tables.is_empty() {
@@ -51,6 +53,38 @@ impl App {
         }
 
         Ok(app)
+    }
+
+    fn fetch_rows(
+        &self,
+        table_name: &str,
+        offset: usize,
+        limit: usize,
+        col_count: usize,
+    ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT * FROM \"{}\" LIMIT {} OFFSET {}",
+            table_name, limit, offset
+        ))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let mut values = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let value = match row.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => String::new(),
+                        rusqlite::types::Value::Integer(v) => v.to_string(),
+                        rusqlite::types::Value::Real(v) => v.to_string(),
+                        rusqlite::types::Value::Text(v) => v,
+                        rusqlite::types::Value::Blob(v) => {
+                            String::from_utf8_lossy(&v).to_string()
+                        }
+                    };
+                    values.push(value);
+                }
+                Ok(values)
+            })?
+            .collect::<SqliteResult<Vec<Vec<String>>>>()?;
+        Ok(rows)
     }
 
     pub fn load_table(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -69,29 +103,11 @@ impl App {
 
         let col_count = headers.len();
 
-        let rows = {
-            let mut stmt = self
-                .conn
-                .prepare(&format!("SELECT * FROM \"{}\" LIMIT 100", table_name))?;
-            stmt.query_map([], |row| {
-                let mut values = Vec::with_capacity(col_count);
-                for i in 0..col_count {
-                    let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => String::new(),
-                        rusqlite::types::Value::Integer(v) => v.to_string(),
-                        rusqlite::types::Value::Real(v) => v.to_string(),
-                        rusqlite::types::Value::Text(v) => v,
-                        rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(&v).to_string(),
-                    };
-                    values.push(value);
-                }
-                Ok(values)
-            })?
-            .collect::<SqliteResult<Vec<Vec<String>>>>()?
-        };
+        let rows = self.fetch_rows(table_name, 0, 100, col_count)?;
 
         self.headers = headers;
         self.rows = rows;
+        self.has_more_rows = self.rows.len() == 100;
         self.h_scroll = 0;
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
@@ -99,6 +115,20 @@ impl App {
             self.table_state = TableState::new();
         }
 
+        Ok(())
+    }
+
+    pub fn fetch_more_rows(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.tables.is_empty() || !self.has_more_rows {
+            return Ok(());
+        }
+        let table_name = &self.tables[self.selected];
+        let col_count = self.headers.len();
+        let offset = self.rows.len();
+
+        let new_rows = self.fetch_rows(table_name, offset, 100, col_count)?;
+        self.has_more_rows = new_rows.len() == 100;
+        self.rows.extend(new_rows);
         Ok(())
     }
 
@@ -137,6 +167,9 @@ impl App {
 
     pub fn scroll_table_down(&mut self) {
         if let Some(selected) = self.table_state.selected() {
+            if selected + 1 >= self.rows.len() && self.has_more_rows {
+                let _ = self.fetch_more_rows();
+            }
             let next = (selected + 1).min(self.rows.len().saturating_sub(1));
             self.table_state.select(Some(next));
         }
@@ -218,7 +251,7 @@ mod tests {
         let app = App::new(path).unwrap();
         assert_eq!(app.tables, vec!["items"]);
         assert_eq!(app.headers, vec!["id", "name", "value"]);
-        assert_eq!(app.rows.len(), 100); // limited to 100 rows
+        assert_eq!(app.rows.len(), 100); // limited to 100 rows initially
     }
 
     #[test]
@@ -289,5 +322,92 @@ mod tests {
         assert_eq!(app.selected, 0); // should not change
         app.previous();
         assert_eq!(app.selected, 0); // should not change
+    }
+
+    #[test]
+    fn test_fetch_more_rows() {
+        let path = "/tmp/squeal_test_fetch_more.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        assert_eq!(app.rows.len(), 100);
+        assert!(app.has_more_rows);
+
+        app.fetch_more_rows().unwrap();
+        assert_eq!(app.rows.len(), 200);
+        assert!(app.has_more_rows);
+
+        app.fetch_more_rows().unwrap();
+        assert_eq!(app.rows.len(), 250);
+        assert!(!app.has_more_rows);
+
+        // Fetching again when no more rows should be a no-op
+        app.fetch_more_rows().unwrap();
+        assert_eq!(app.rows.len(), 250);
+        assert!(!app.has_more_rows);
+    }
+
+    #[test]
+    fn test_scroll_table_down_fetches_more() {
+        let path = "/tmp/squeal_test_scroll_fetch.db";
+        test_db::TestDb::large(path, 250);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+
+        // Scroll to bottom of first batch
+        for _ in 0..99 {
+            app.scroll_table_down();
+        }
+        assert_eq!(app.table_state.selected(), Some(99));
+        assert_eq!(app.rows.len(), 100);
+        assert!(app.has_more_rows);
+
+        // One more scroll should trigger fetching
+        app.scroll_table_down();
+        assert_eq!(app.table_state.selected(), Some(100));
+        assert_eq!(app.rows.len(), 200);
+        assert!(app.has_more_rows);
+
+        // Scroll to bottom of second batch
+        for _ in 0..99 {
+            app.scroll_table_down();
+        }
+        assert_eq!(app.table_state.selected(), Some(199));
+        assert_eq!(app.rows.len(), 200);
+
+        // Scroll to trigger final fetch
+        app.scroll_table_down();
+        assert_eq!(app.table_state.selected(), Some(200));
+        assert_eq!(app.rows.len(), 250);
+        assert!(!app.has_more_rows);
+
+        // Keep scrolling to the end
+        for _ in 0..49 {
+            app.scroll_table_down();
+        }
+        assert_eq!(app.table_state.selected(), Some(249));
+        assert_eq!(app.rows.len(), 250);
+        assert!(!app.has_more_rows);
+
+        // Scroll past the end should stay at the bottom
+        app.scroll_table_down();
+        assert_eq!(app.table_state.selected(), Some(249));
+        assert_eq!(app.rows.len(), 250);
+    }
+
+    #[test]
+    fn test_small_table_no_fetch() {
+        let path = "/tmp/squeal_test_small_no_fetch.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+
+        // products has 2 rows, so has_more_rows should be false
+        assert!(!app.has_more_rows);
+
+        app.scroll_table_down();
+        assert_eq!(app.table_state.selected(), Some(1));
+        app.scroll_table_down();
+        assert_eq!(app.table_state.selected(), Some(1)); // stays at bottom
+        assert_eq!(app.rows.len(), 2);
     }
 }
