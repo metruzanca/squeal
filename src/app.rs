@@ -8,6 +8,8 @@
 use ratatui::widgets::TableState;
 use rusqlite::{Connection, Result as SqliteResult};
 
+use crate::ui::helpers::cursor_line_col;
+
 /// Information about a single foreign key constraint on a table.
 /// A composite key may have multiple `ForeignKeyInfo` rows with the same `id`.
 #[derive(Debug, Clone)]
@@ -1244,23 +1246,6 @@ impl App {
             self.query_scroll = line;
         }
     }
-}
-
-fn cursor_line_col(text: &str, cursor: usize) -> (usize, usize) {
-    let mut line = 0;
-    let mut col = 0;
-    for (i, ch) in text.chars().enumerate() {
-        if i >= cursor {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
 }
 
 #[cfg(test)]
