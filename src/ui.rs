@@ -56,7 +56,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let list = List::new(items).block(Block::default().title("Tables").borders(Borders::ALL));
+    let mut list_block = Block::default().title("Tables").borders(Borders::ALL);
+    if !app.table_focused {
+        list_block = list_block
+            .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    }
+    let list = List::new(items).block(list_block);
     frame.render_widget(list, main_layout[0]);
 
     // Right column: Table data
@@ -177,8 +182,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vec![
             Span::raw(" q"),
             Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
-            Span::raw("Esc"),
-            Span::styled(": Unfocus ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Tab"),
+            Span::styled(": Table List ", Style::default().fg(Color::DarkGray)),
             Span::raw("j/k"),
             Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
             Span::raw("h/l"),
@@ -188,10 +193,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vec![
             Span::raw(" q"),
             Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Tab"),
+            Span::styled(": View Table ", Style::default().fg(Color::DarkGray)),
             Span::raw("j/k"),
-            Span::styled(": Navigate ", Style::default().fg(Color::DarkGray)),
-            Span::raw("l"),
-            Span::styled(": Focus Table", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Navigate", Style::default().fg(Color::DarkGray)),
         ]
     };
     let keybind_line = Line::from(keybinds);

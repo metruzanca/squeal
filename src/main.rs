@@ -122,6 +122,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                 app.unfocus_table();
             } else if app.table_focused {
                 match key.code {
+                    KeyCode::Tab => app.unfocus_table(),
                     KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
                     KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
@@ -130,9 +131,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                 }
             } else {
                 match key.code {
+                    KeyCode::Tab => app.focus_table(),
                     KeyCode::Char('j') | KeyCode::Down => app.next(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                    KeyCode::Char('l') | KeyCode::Right => app.focus_table(),
                     _ => {}
                 }
             }
