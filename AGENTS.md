@@ -61,5 +61,5 @@ Users can install with: `cargo binstall squeal`
 
 ## Compatibility Notes
 
-- Linux x86_64 binaries are built on `ubuntu-22.04` to link against an older glibc, ensuring compatibility with common LTS distributions.
-- Do not use `ubuntu-latest` for the Linux build, as newer glibc versions break binaries on older systems.
+- Linux x86_64 binaries are built using `musl` (`x86_64-unknown-linux-musl`) to create fully static binaries with no glibc dependency. This ensures the binary works on any x86_64 Linux distribution regardless of the glibc version installed.
+- `cargo binstall` may require specifying the target explicitly: `cargo binstall --target x86_64-unknown-linux-musl`
