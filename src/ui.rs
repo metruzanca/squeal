@@ -160,7 +160,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         let table = Table::new(rows, &constraints).header(header).block(block);
         let table = if app.table_focused {
-            table.highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            table.highlight_style(Style::default().fg(Color::White).add_modifier(Modifier::REVERSED))
         } else {
             table
         };
