@@ -17,6 +17,7 @@ use ratatui::{
 use crate::app::App;
 
 const MAX_COL_WIDTH: u16 = 30;
+const COL_FG: Color = Color::DarkGray; // muted, matches control descriptions
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
@@ -125,7 +126,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .map(|(i, text)| {
                         let width = visible_widths[i] as usize;
                         let truncated = truncate_with_ellipsis(text, width);
-                        Cell::from(truncated)
+                        if (app.h_scroll + i) % 2 == 0 {
+                            Cell::from(truncated)
+                        } else {
+                            Cell::from(truncated).style(Style::default().fg(COL_FG))
+                        }
                     })
                     .collect();
                 Row::new(cells)
