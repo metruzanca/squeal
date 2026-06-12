@@ -58,3 +58,8 @@
 The project is `cargo binstall` compatible. `binstall` looks at GitHub releases for prebuilt binaries matching the crate name. The `repository` field in `Cargo.toml` points to the correct repo so binstall can locate releases. Binaries are packaged as `.tar.gz` (Unix) and `.zip` (Windows) with target-triple suffixes.
 
 Users can install with: `cargo binstall squeal`
+
+## Compatibility Notes
+
+- Linux x86_64 binaries are built on `ubuntu-22.04` to link against an older glibc, ensuring compatibility with common LTS distributions.
+- Do not use `ubuntu-latest` for the Linux build, as newer glibc versions break binaries on older systems.
