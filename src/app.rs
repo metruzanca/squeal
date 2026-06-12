@@ -31,6 +31,12 @@ pub struct RelatedRecord {
     pub row: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Query {
+    pub name: String,
+    pub sql: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterOp {
     Equals,
@@ -47,7 +53,8 @@ pub enum FilterMode {
 
 pub struct App {
     pub tables: Vec<String>,
-    pub selected: usize,
+    pub queries: Vec<Query>,
+    pub selected_sidebar: usize,
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub conn: Connection,
@@ -71,12 +78,24 @@ pub struct App {
     pub sort_asc: bool,
     pub temp_filter_op: FilterOp,
     pub temp_filter_value: String,
+    pub query_text: String,
+    pub query_cursor: usize,
+    pub query_edit_mode: bool,
+    pub query_scroll: usize,
+    pub is_query_view: bool,
+    pub rename_mode: bool,
+    pub rename_value: String,
+    pub save_queries: bool,
+    pub all_rows: Vec<Vec<String>>,
+    pub working_dir: std::path::PathBuf,
 }
 
 impl App {
     pub fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(db_path)?;
-        Self::from_connection(conn)
+        let mut app = Self::from_connection(conn)?;
+        app.save_queries = true;
+        Ok(app)
     }
 
     pub fn from_connection(conn: Connection) -> Result<Self, Box<dyn std::error::Error>> {
@@ -87,9 +106,13 @@ impl App {
                 .collect::<SqliteResult<Vec<String>>>()?
         };
 
+        let working_dir = std::env::current_dir().unwrap_or_default();
+        let queries = Self::load_queries(&working_dir);
+
         let mut app = App {
             tables,
-            selected: 0,
+            queries,
+            selected_sidebar: 0,
             headers: Vec::new(),
             rows: Vec::new(),
             conn,
@@ -113,6 +136,16 @@ impl App {
             sort_asc: true,
             temp_filter_op: FilterOp::Equals,
             temp_filter_value: String::new(),
+            query_text: String::new(),
+            query_cursor: 0,
+            query_edit_mode: false,
+            query_scroll: 0,
+            is_query_view: false,
+            rename_mode: false,
+            rename_value: String::new(),
+            save_queries: false,
+            all_rows: Vec::new(),
+            working_dir,
         };
 
         if !app.tables.is_empty() {
@@ -196,6 +229,9 @@ impl App {
         if index >= self.tables.len() {
             return Ok(());
         }
+        self.selected_sidebar = index;
+        self.is_query_view = false;
+        self.query_edit_mode = false;
         let table_name = &self.tables[index];
 
         let headers = {
@@ -235,10 +271,10 @@ impl App {
     }
 
     pub fn fetch_more_rows(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.tables.is_empty() || !self.has_more_rows {
+        if self.tables.is_empty() || !self.has_more_rows || self.is_query_view {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected];
+        let table_name = &self.tables[self.selected_sidebar];
         let col_count = self.headers.len();
         let offset = self.rows.len();
 
@@ -249,27 +285,66 @@ impl App {
     }
 
     pub fn next(&mut self) {
-        if !self.tables.is_empty() && !self.table_focused {
-            self.selected = (self.selected + 1) % self.tables.len();
-            let _ = self.load_table(self.selected);
+        if self.table_focused {
+            return;
+        }
+        let len = self.sidebar_len();
+        if len == 0 {
+            return;
+        }
+        let mut next = (self.selected_sidebar + 1) % len;
+        // Skip separator
+        if !self.tables.is_empty() && !self.queries.is_empty() && next == self.tables.len() {
+            next = (next + 1) % len;
+        }
+        self.selected_sidebar = next;
+        if self.current_is_table() {
+            let _ = self.load_table(self.selected_sidebar);
+        } else if self.current_is_query() {
+            let _ = self.load_query(self.query_index());
         }
     }
 
     pub fn previous(&mut self) {
-        if !self.tables.is_empty() && !self.table_focused {
-            self.selected = if self.selected == 0 {
-                self.tables.len() - 1
-            } else {
-                self.selected - 1
-            };
-            let _ = self.load_table(self.selected);
+        if self.table_focused {
+            return;
+        }
+        let len = self.sidebar_len();
+        if len == 0 {
+            return;
+        }
+        let mut prev = if self.selected_sidebar == 0 {
+            len - 1
+        } else {
+            self.selected_sidebar - 1
+        };
+        // Skip separator
+        if !self.tables.is_empty() && !self.queries.is_empty() && prev == self.tables.len() {
+            prev = if prev == 0 { len - 1 } else { prev - 1 };
+        }
+        self.selected_sidebar = prev;
+        if self.current_is_table() {
+            let _ = self.load_table(self.selected_sidebar);
+        } else if self.current_is_query() {
+            let _ = self.load_query(self.query_index());
         }
     }
 
     pub fn focus_table(&mut self) {
-        if !self.headers.is_empty() {
+        if self.current_is_table() {
+            if !self.headers.is_empty() {
+                self.table_focused = true;
+                self.scroll_offset = 0;
+                if !self.rows.is_empty() {
+                    self.table_state.select(Some(0));
+                }
+            }
+        } else if self.current_is_query() {
+            if !self.is_query_view {
+                let _ = self.load_query(self.query_index());
+            }
             self.table_focused = true;
-            self.scroll_offset = 0;
+            self.query_edit_mode = false;
             if !self.rows.is_empty() {
                 self.table_state.select(Some(0));
             }
@@ -282,6 +357,7 @@ impl App {
         self.h_scroll = 0;
         self.close_modal();
         self.filter_mode = FilterMode::None;
+        self.query_edit_mode = false;
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -299,7 +375,7 @@ impl App {
 
     pub fn scroll_table_down(&mut self) {
         if let Some(selected) = self.table_state.selected() {
-            if selected + 1 >= self.rows.len() && self.has_more_rows {
+            if !self.is_query_view && selected + 1 >= self.rows.len() && self.has_more_rows {
                 let _ = self.fetch_more_rows();
             }
             let next = (selected + 1).min(self.rows.len().saturating_sub(1));
@@ -329,7 +405,7 @@ impl App {
             return;
         }
         let target = self.scroll_offset + self.page_size;
-        while self.rows.len() <= target + self.page_size && self.has_more_rows {
+        while !self.is_query_view && self.rows.len() <= target + self.page_size && self.has_more_rows {
             let _ = self.fetch_more_rows();
         }
         let max_offset = if self.rows.len() == 0 {
@@ -401,7 +477,25 @@ impl App {
         if selected >= self.rows.len() {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected];
+        if self.is_query_view {
+            // Show row data detail for query views
+            let row = self.rows[selected].clone();
+            let headers = self.headers.clone();
+            self.modal_records = vec![RelatedRecord {
+                table_name: "Query Result".to_string(),
+                fk_column: "Row".to_string(),
+                ref_column: "Data".to_string(),
+                fk_value: (selected + 1).to_string(),
+                headers,
+                row,
+            }];
+            self.modal_open = true;
+            self.modal_selected = 0;
+            self.modal_h_scroll = 0;
+            self.modal_needs_h_scroll = false;
+            return Ok(());
+        }
+        let table_name = &self.tables[self.selected_sidebar];
         let fks = self.get_foreign_keys(table_name)?;
         if fks.is_empty() {
             return Ok(());
@@ -528,7 +622,6 @@ impl App {
         let target_table = self.modal_records[self.modal_selected].table_name.clone();
         self.close_modal();
         if let Some(idx) = self.tables.iter().position(|t| t == &target_table) {
-            self.selected = idx;
             let _ = self.load_table(idx);
         }
     }
@@ -648,14 +741,67 @@ impl App {
     }
 
     pub fn apply_filters_and_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.is_query_view {
+            return self.apply_query_filters_and_sort();
+        }
         if self.tables.is_empty() {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected];
+        let table_name = &self.tables[self.selected_sidebar];
         let col_count = self.headers.len();
 
         self.rows = self.fetch_rows(table_name, 0, 100, col_count)?;
         self.has_more_rows = self.rows.len() == 100;
+        self.scroll_offset = 0;
+        if self.table_focused && !self.rows.is_empty() {
+            self.table_state = TableState::new().with_selected(Some(0));
+        } else {
+            self.table_state = TableState::new();
+        }
+        Ok(())
+    }
+
+    fn apply_query_filters_and_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.all_rows.is_empty() {
+            self.rows = Vec::new();
+            self.scroll_offset = 0;
+            self.table_state = TableState::new();
+            return Ok(());
+        }
+
+        let mut rows = self.all_rows.clone();
+
+        let active_filters: Vec<(usize, &FilterOp, &String)> = self
+            .filters
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
+            .collect();
+
+        if !active_filters.is_empty() {
+            rows.retain(|row| {
+                active_filters.iter().all(|(i, op, val)| {
+                    let cell = &row[*i];
+                    match op {
+                        FilterOp::Equals => cell == *val,
+                        FilterOp::Contains => cell.to_lowercase().contains(&val.to_lowercase()),
+                    }
+                })
+            });
+        }
+
+        if let Some(sort_col) = self.sort_col {
+            rows.sort_by(|a, b| {
+                let cmp = a[sort_col].cmp(&b[sort_col]);
+                if self.sort_asc {
+                    cmp
+                } else {
+                    cmp.reverse()
+                }
+            });
+        }
+
+        self.rows = rows;
         self.scroll_offset = 0;
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
@@ -674,6 +820,447 @@ impl App {
             let _ = self.apply_filters_and_sort();
         }
     }
+
+    // Query methods
+
+    fn load_queries(working_dir: &std::path::Path) -> Vec<Query> {
+        let queries_dir = working_dir.join(".squeal").join("queries");
+        let mut queries = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&queries_dir) {
+            let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            entries.sort_by_key(|e| e.path());
+
+            for entry in entries {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(sql) = std::fs::read_to_string(&path) {
+                            queries.push(Query {
+                                name: name.to_string(),
+                                sql,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        queries
+    }
+
+    fn save_query_to_disk(working_dir: &std::path::Path, name: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let queries_dir = working_dir.join(".squeal").join("queries");
+        std::fs::create_dir_all(&queries_dir)?;
+        let path = queries_dir.join(format!("{}.sql", name));
+        std::fs::write(&path, sql)?;
+        Ok(())
+    }
+
+    fn delete_query_from_disk(working_dir: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let path = working_dir.join(".squeal").join("queries").join(format!("{}.sql", name));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    pub fn run_query(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let sql = self.query_text.trim();
+        if sql.is_empty() {
+            self.headers = Vec::new();
+            self.rows = Vec::new();
+            return Ok(());
+        }
+
+        match self.conn.prepare(sql) {
+            Ok(mut stmt) => {
+                let col_count = stmt.column_count();
+                let headers: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+
+                match stmt.query_map([], |row| {
+                    let mut values = Vec::with_capacity(col_count);
+                    for i in 0..col_count {
+                        let value = match row.get::<_, rusqlite::types::Value>(i)? {
+                            rusqlite::types::Value::Null => String::new(),
+                            rusqlite::types::Value::Integer(v) => v.to_string(),
+                            rusqlite::types::Value::Real(v) => v.to_string(),
+                            rusqlite::types::Value::Text(v) => v,
+                            rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(&v).to_string(),
+                        };
+                        values.push(value);
+                    }
+                    Ok(values)
+                }) {
+                    Ok(mapped) => {
+                        match mapped.collect::<SqliteResult<Vec<Vec<String>>>>() {
+                            Ok(rows) => {
+                                self.headers = headers;
+                                self.rows = rows;
+                            }
+                            Err(e) => {
+                                self.headers = vec!["Error".to_string()];
+                                self.rows = vec![vec![e.to_string()]];
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.headers = vec!["Error".to_string()];
+                        self.rows = vec![vec![e.to_string()]];
+                    }
+                }
+            }
+            Err(e) => {
+                self.headers = vec!["Error".to_string()];
+                self.rows = vec![vec![e.to_string()]];
+            }
+        }
+
+        self.has_more_rows = false;
+        self.h_scroll = 0;
+        self.scroll_offset = 0;
+        self.table_state = TableState::new();
+        if self.table_focused && !self.rows.is_empty() {
+            self.table_state = TableState::new().with_selected(Some(0));
+        }
+        // Clear filters/sort when query is re-run
+        self.all_rows = self.rows.clone();
+        self.filters = vec![None; self.headers.len()];
+        self.filter_mode = FilterMode::None;
+        self.filter_col = 0;
+        self.sort_col = None;
+        self.sort_asc = true;
+        self.temp_filter_op = FilterOp::Equals;
+        self.temp_filter_value = String::new();
+
+        Ok(())
+    }
+
+    pub fn load_query(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if index >= self.queries.len() {
+            return Ok(());
+        }
+        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
+        self.selected_sidebar = offset + index;
+        self.query_text = self.queries[index].sql.clone();
+        self.query_cursor = self.query_text.chars().count();
+        self.query_scroll = 0;
+        self.is_query_view = true;
+        self.query_edit_mode = false;
+        self.run_query()?;
+        Ok(())
+    }
+
+    // Sidebar helpers
+    pub fn sidebar_len(&self) -> usize {
+        let mut len = self.tables.len();
+        if !self.queries.is_empty() {
+            if !self.tables.is_empty() {
+                len += 1; // separator
+            }
+            len += self.queries.len();
+        }
+        len
+    }
+
+    pub fn current_is_table(&self) -> bool {
+        self.selected_sidebar < self.tables.len()
+    }
+
+    pub fn current_is_query(&self) -> bool {
+        if self.queries.is_empty() {
+            false
+        } else {
+            let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
+            self.selected_sidebar >= offset
+        }
+    }
+
+    pub fn query_index(&self) -> usize {
+        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
+        self.selected_sidebar - offset
+    }
+
+    pub fn save_current_query(&mut self) {
+        if self.is_query_view && self.current_is_query() {
+            let idx = self.query_index();
+            let name = self.queries[idx].name.clone();
+            if self.save_queries {
+                if let Err(e) = Self::save_query_to_disk(&self.working_dir, &name, &self.query_text) {
+                    eprintln!("Failed to save query: {}", e);
+                } else {
+                    self.queries[idx].sql = self.query_text.clone();
+                }
+            } else {
+                self.queries[idx].sql = self.query_text.clone();
+            }
+        }
+    }
+
+    pub fn start_rename(&mut self) {
+        if self.current_is_query() {
+            let idx = self.query_index();
+            self.rename_value = self.queries[idx].name.clone();
+            self.rename_mode = true;
+        }
+    }
+
+    pub fn cancel_rename(&mut self) {
+        self.rename_mode = false;
+        self.rename_value = String::new();
+    }
+
+    pub fn apply_rename(&mut self) {
+        if !self.rename_value.is_empty() && self.current_is_query() {
+            let idx = self.query_index();
+            let old_name = self.queries[idx].name.clone();
+            let new_name = self.rename_value.clone();
+            if old_name != new_name && !self.queries.iter().any(|q| q.name == new_name) {
+                if self.save_queries {
+                    let old_path = self.working_dir.join(".squeal").join("queries").join(format!("{}.sql", old_name));
+                    let new_path = self.working_dir.join(".squeal").join("queries").join(format!("{}.sql", new_name));
+                    if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                        eprintln!("Failed to rename query file: {}", e);
+                    } else {
+                        self.queries[idx].name = new_name;
+                    }
+                } else {
+                    self.queries[idx].name = new_name;
+                }
+            }
+        }
+        self.rename_mode = false;
+        self.rename_value = String::new();
+    }
+
+    pub fn create_new_query(&mut self) {
+        let base_name = "new_query";
+        let mut name = base_name.to_string();
+        let mut i = 1;
+        while self.queries.iter().any(|q| q.name == name) {
+            name = format!("{}_{}", base_name, i);
+            i += 1;
+        }
+
+        let query = Query {
+            name: name.clone(),
+            sql: String::new(),
+        };
+
+        if self.save_queries {
+            if let Err(e) = Self::save_query_to_disk(&self.working_dir, &name, "") {
+                eprintln!("Failed to save query: {}", e);
+                return;
+            }
+        }
+
+        self.queries.push(query);
+        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
+        self.selected_sidebar = offset + self.queries.len() - 1;
+        self.query_text = String::new();
+        self.query_cursor = 0;
+        self.query_scroll = 0;
+        self.is_query_view = true;
+        self.query_edit_mode = true;
+        self.headers = Vec::new();
+        self.rows = Vec::new();
+        self.table_focused = true;
+        self.table_state = TableState::new();
+        self.h_scroll = 0;
+        self.scroll_offset = 0;
+        self.filters = Vec::new();
+        self.sort_col = None;
+        self.sort_asc = true;
+        self.filter_mode = FilterMode::None;
+    }
+
+    pub fn delete_current_query(&mut self) {
+        if !self.current_is_query() {
+            return;
+        }
+        let idx = self.query_index();
+        let name = self.queries[idx].name.clone();
+        if self.save_queries {
+            if let Err(e) = Self::delete_query_from_disk(&self.working_dir, &name) {
+                eprintln!("Failed to delete query: {}", e);
+            }
+        }
+        self.queries.remove(idx);
+        if self.queries.is_empty() {
+            self.is_query_view = false;
+            self.query_edit_mode = false;
+            self.table_focused = false;
+            if !self.tables.is_empty() {
+                self.selected_sidebar = self.tables.len().saturating_sub(1);
+                let _ = self.load_table(self.selected_sidebar);
+            } else {
+                self.selected_sidebar = 0;
+            }
+        } else {
+            let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
+            let max_query = self.queries.len() - 1;
+            let new_idx = idx.min(max_query);
+            self.selected_sidebar = offset + new_idx;
+            let _ = self.load_query(new_idx);
+        }
+    }
+
+    pub fn insert_query_char(&mut self, c: char) {
+        let mut chars: Vec<char> = self.query_text.chars().collect();
+        if self.query_cursor <= chars.len() {
+            chars.insert(self.query_cursor, c);
+            self.query_cursor += 1;
+            self.query_text = chars.into_iter().collect();
+        }
+    }
+
+    pub fn backspace_query_char(&mut self) {
+        if self.query_cursor > 0 {
+            let mut chars: Vec<char> = self.query_text.chars().collect();
+            chars.remove(self.query_cursor - 1);
+            self.query_cursor -= 1;
+            self.query_text = chars.into_iter().collect();
+        }
+    }
+
+    pub fn delete_query_char(&mut self) {
+        let mut chars: Vec<char> = self.query_text.chars().collect();
+        if self.query_cursor < chars.len() {
+            chars.remove(self.query_cursor);
+            self.query_text = chars.into_iter().collect();
+        }
+    }
+
+    pub fn move_query_cursor_left(&mut self) {
+        if self.query_cursor > 0 {
+            self.query_cursor -= 1;
+        }
+    }
+
+    pub fn move_query_cursor_right(&mut self) {
+        let len = self.query_text.chars().count();
+        if self.query_cursor < len {
+            self.query_cursor += 1;
+        }
+    }
+
+    pub fn move_query_cursor_up(&mut self) {
+        let chars: Vec<char> = self.query_text.chars().collect();
+        let mut line_starts = vec![0];
+        for (i, ch) in chars.iter().enumerate() {
+            if *ch == '\n' {
+                line_starts.push(i + 1);
+            }
+        }
+
+        let mut current_line = 0;
+        for (i, &start) in line_starts.iter().enumerate() {
+            if start > self.query_cursor {
+                break;
+            }
+            current_line = i;
+        }
+
+        if current_line == 0 {
+            return;
+        }
+
+        let current_line_start = line_starts[current_line];
+        let prev_line_start = line_starts[current_line - 1];
+        let prev_line_end = current_line_start.saturating_sub(1);
+        let prev_line_len = prev_line_end - prev_line_start;
+        let col = self.query_cursor - current_line_start;
+
+        self.query_cursor = prev_line_start + col.min(prev_line_len);
+    }
+
+    pub fn move_query_cursor_down(&mut self) {
+        let chars: Vec<char> = self.query_text.chars().collect();
+        let mut line_starts = vec![0];
+        for (i, ch) in chars.iter().enumerate() {
+            if *ch == '\n' {
+                line_starts.push(i + 1);
+            }
+        }
+
+        let mut current_line = 0;
+        for (i, &start) in line_starts.iter().enumerate() {
+            if start > self.query_cursor {
+                break;
+            }
+            current_line = i;
+        }
+
+        if current_line + 1 >= line_starts.len() {
+            return;
+        }
+
+        let current_line_start = line_starts[current_line];
+        let next_line_start = line_starts[current_line + 1];
+        let mut next_line_end = chars.len();
+        if current_line + 2 < line_starts.len() {
+            next_line_end = line_starts[current_line + 2] - 1;
+        }
+        let next_line_len = next_line_end - next_line_start;
+        let col = self.query_cursor - current_line_start;
+
+        self.query_cursor = next_line_start + col.min(next_line_len);
+    }
+
+    pub fn move_query_cursor_home(&mut self) {
+        let chars: Vec<char> = self.query_text.chars().collect();
+        let mut current_line_start = 0;
+        for (i, ch) in chars.iter().enumerate() {
+            if i == self.query_cursor {
+                break;
+            }
+            if *ch == '\n' {
+                current_line_start = i + 1;
+            }
+        }
+        self.query_cursor = current_line_start;
+    }
+
+    pub fn move_query_cursor_end(&mut self) {
+        let chars: Vec<char> = self.query_text.chars().collect();
+        for (i, ch) in chars.iter().enumerate().skip(self.query_cursor) {
+            if *ch == '\n' {
+                self.query_cursor = i;
+                return;
+            }
+        }
+        self.query_cursor = chars.len();
+    }
+
+    pub fn ensure_query_cursor_visible(&mut self, area_height: u16) {
+        let (line, _) = cursor_line_col(&self.query_text, self.query_cursor);
+        let visible_height = area_height as usize;
+        if visible_height == 0 {
+            return;
+        }
+        if line >= self.query_scroll + visible_height {
+            self.query_scroll = line.saturating_sub(visible_height - 1);
+        } else if line < self.query_scroll {
+            self.query_scroll = line;
+        }
+    }
+}
+
+fn cursor_line_col(text: &str, cursor: usize) -> (usize, usize) {
+    let mut line = 0;
+    let mut col = 0;
+    for (i, ch) in text.chars().enumerate() {
+        if i >= cursor {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
 #[cfg(test)]
@@ -706,22 +1293,22 @@ mod tests {
         let path = "/tmp/squeal_test_nav.db";
         test_db::TestDb::simple(path);
         let mut app = App::new(path).unwrap();
-        assert_eq!(app.selected, 0);
-        assert_eq!(app.tables[app.selected], "products");
+        assert_eq!(app.selected_sidebar, 0);
+        assert_eq!(app.tables[app.selected_sidebar], "products");
 
         app.next();
-        assert_eq!(app.selected, 1);
-        assert_eq!(app.tables[app.selected], "users");
+        assert_eq!(app.selected_sidebar, 1);
+        assert_eq!(app.tables[app.selected_sidebar], "users");
         assert_eq!(app.headers, vec!["id", "name", "email"]);
         assert_eq!(app.rows.len(), 3);
 
         app.next();
-        assert_eq!(app.selected, 0);
-        assert_eq!(app.tables[app.selected], "products");
+        assert_eq!(app.selected_sidebar, 0);
+        assert_eq!(app.tables[app.selected_sidebar], "products");
 
         app.previous();
-        assert_eq!(app.selected, 1);
-        assert_eq!(app.tables[app.selected], "users");
+        assert_eq!(app.selected_sidebar, 1);
+        assert_eq!(app.tables[app.selected_sidebar], "users");
     }
 
     #[test]
@@ -806,12 +1393,12 @@ mod tests {
         let mut app = App::new(path).unwrap();
         app.focus_table();
         assert!(app.table_focused);
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected_sidebar, 0);
 
         app.next();
-        assert_eq!(app.selected, 0); // should not change
+        assert_eq!(app.selected_sidebar, 0); // should not change
         app.previous();
-        assert_eq!(app.selected, 0); // should not change
+        assert_eq!(app.selected_sidebar, 0); // should not change
     }
 
     #[test]
@@ -1060,8 +1647,8 @@ mod tests {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::from_connection(conn).unwrap();
         // Navigate to orders table (should be index 2 after sorting: categories, orders, products, users)
-        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         assert_eq!(app.table_state.selected(), Some(0));
 
@@ -1096,8 +1683,8 @@ mod tests {
     fn test_close_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::from_connection(conn).unwrap();
-        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
         assert!(app.modal_open);
@@ -1112,8 +1699,8 @@ mod tests {
     fn test_unfocus_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::from_connection(conn).unwrap();
-        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
         assert!(app.modal_open);
@@ -1127,15 +1714,15 @@ mod tests {
     fn test_load_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::from_connection(conn).unwrap();
-        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
         assert!(app.modal_open);
 
         // Load a different table
-        app.selected = app.tables.iter().position(|t| t == "users").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         assert!(!app.modal_open);
         assert!(app.modal_records.is_empty());
     }
@@ -1145,8 +1732,8 @@ mod tests {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::from_connection(conn).unwrap();
         // users table has no foreign keys
-        app.selected = app.tables.iter().position(|t| t == "users").unwrap();
-        app.load_table(app.selected).unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
+        app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
         assert!(!app.modal_open);

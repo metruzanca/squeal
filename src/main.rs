@@ -116,51 +116,97 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
             } else if key.code == KeyCode::Esc {
                 if app.filter_mode != FilterMode::None {
                     app.cancel_filter_mode();
+                } else if app.query_edit_mode {
+                    app.query_edit_mode = false;
+                    let _ = app.run_query();
+                    app.save_current_query();
+                } else if app.rename_mode {
+                    app.cancel_rename();
                 } else {
                     app.unfocus_table();
                 }
             } else if key.code == KeyCode::Char('?') {
                 app.toggle_help();
             } else if app.table_focused {
-                match app.filter_mode {
-                    FilterMode::HeaderSelect => {
+                if app.filter_mode != FilterMode::None {
+                    // Filter mode: shared between query view and regular tables
+                    match app.filter_mode {
+                        FilterMode::HeaderSelect => {
+                            match key.code {
+                                KeyCode::Char('/') => app.cancel_filter_mode(),
+                                KeyCode::Char('h') | KeyCode::Left => app.move_filter_col_left(),
+                                KeyCode::Char('l') | KeyCode::Right => app.move_filter_col_right(),
+                                KeyCode::Char('k') | KeyCode::Up => app.cycle_sort_order(),
+                                KeyCode::Char('j') | KeyCode::Down => app.cycle_sort_order(),
+                                KeyCode::Enter => app.enter_filter_for_col(),
+                                KeyCode::Delete => app.delete_current_filter(),
+                                _ => {}
+                            }
+                        }
+                        FilterMode::TypeSelect => {
+                            match key.code {
+                                KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type(),
+                                KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
+                                KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type(),
+                                KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
+                                KeyCode::Enter => app.move_to_value_input(),
+                                KeyCode::Esc => app.cancel_filter_mode(),
+                                KeyCode::Delete => app.delete_current_filter(),
+                                _ => {}
+                            }
+                        }
+                        FilterMode::ValueInput => {
+                            match key.code {
+                                KeyCode::Char(c) => app.filter_input_char(c),
+                                KeyCode::Backspace => app.filter_input_backspace(),
+                                KeyCode::Enter => app.apply_filter(),
+                                KeyCode::Esc => app.cancel_filter_mode(),
+                                KeyCode::Delete => app.delete_current_filter(),
+                                _ => {}
+                            }
+                        }
+                        FilterMode::None => unreachable!(),
+                    }
+                } else if app.is_query_view {
+                    if app.rename_mode {
                         match key.code {
-                            KeyCode::Char('/') => app.cancel_filter_mode(),
-                            KeyCode::Char('h') | KeyCode::Left => app.move_filter_col_left(),
-                            KeyCode::Char('l') | KeyCode::Right => app.move_filter_col_right(),
-                            KeyCode::Char('k') | KeyCode::Up => app.cycle_sort_order(),
-                            KeyCode::Char('j') | KeyCode::Down => app.cycle_sort_order(),
-                            KeyCode::Enter => app.enter_filter_for_col(),
-                            KeyCode::Delete => app.delete_current_filter(),
+                            KeyCode::Char(c) => app.rename_value.push(c),
+                            KeyCode::Backspace => { app.rename_value.pop(); }
+                            KeyCode::Enter => app.apply_rename(),
+                            KeyCode::Esc => app.cancel_rename(),
                             _ => {}
                         }
-                    }
-                    FilterMode::TypeSelect => {
+                    } else if app.query_edit_mode {
                         match key.code {
-                            KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type(),
-                            KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
-                            KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type(),
-                            KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
-                            KeyCode::Enter => app.move_to_value_input(),
-                            KeyCode::Esc => app.cancel_filter_mode(),
-                            KeyCode::Delete => app.delete_current_filter(),
+                            KeyCode::Esc | KeyCode::Tab => {
+                                app.query_edit_mode = false;
+                                let _ = app.run_query();
+                                app.save_current_query();
+                            }
+                            KeyCode::Char(c) => app.insert_query_char(c),
+                            KeyCode::Backspace => app.backspace_query_char(),
+                            KeyCode::Delete => app.delete_query_char(),
+                            KeyCode::Enter => {
+                                if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                                    let _ = app.run_query();
+                                    app.save_current_query();
+                                } else {
+                                    app.insert_query_char('\n');
+                                }
+                            }
+                            KeyCode::Left => app.move_query_cursor_left(),
+                            KeyCode::Right => app.move_query_cursor_right(),
+                            KeyCode::Up => app.move_query_cursor_up(),
+                            KeyCode::Down => app.move_query_cursor_down(),
+                            KeyCode::Home => app.move_query_cursor_home(),
+                            KeyCode::End => app.move_query_cursor_end(),
                             _ => {}
                         }
-                    }
-                    FilterMode::ValueInput => {
-                        match key.code {
-                            KeyCode::Char(c) => app.filter_input_char(c),
-                            KeyCode::Backspace => app.filter_input_backspace(),
-                            KeyCode::Enter => app.apply_filter(),
-                            KeyCode::Esc => app.cancel_filter_mode(),
-                            KeyCode::Delete => app.delete_current_filter(),
-                            _ => {}
-                        }
-                    }
-                    FilterMode::None => {
+                    } else {
                         match key.code {
                             KeyCode::Char('/') => app.toggle_filter_mode(),
-                            KeyCode::Tab => app.unfocus_table(),
+                            KeyCode::Char('r') => app.start_rename(),
+                            KeyCode::Tab => app.query_edit_mode = true,
                             KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
                             KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
                             KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
@@ -171,12 +217,32 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                             _ => {}
                         }
                     }
+                } else {
+                    // Regular table view
+                    match key.code {
+                        KeyCode::Char('/') => app.toggle_filter_mode(),
+                        KeyCode::Tab => app.unfocus_table(),
+                        KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
+                        KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
+                        KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
+                        KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
+                        KeyCode::PageDown => app.page_down(),
+                        KeyCode::PageUp => app.page_up(),
+                        KeyCode::Enter => { let _ = app.open_modal(); }
+                        _ => {}
+                    }
                 }
             } else {
                 match key.code {
                     KeyCode::Tab | KeyCode::Enter => app.focus_table(),
                     KeyCode::Char('j') | KeyCode::Down => app.next(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                    KeyCode::Char('n') => {
+                        app.create_new_query();
+                    }
+                    KeyCode::Char('D') => {
+                        app.delete_current_query();
+                    }
                     _ => {}
                 }
             }

@@ -31,52 +31,260 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .map(|t| t.chars().count() as u16)
         .max()
         .unwrap_or(0);
-    let left_width = (max_table_name_len + 3).max(8); // +1 padding + 2 borders, min 8 for "Tables"
+    let max_query_name_len = app
+        .queries
+        .iter()
+        .map(|q| q.name.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let left_width = (max_table_name_len.max(max_query_name_len) + 3).max(8); // +1 padding + 2 borders, min 8 for "Tables"
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Fill(1)])
         .split(outer_layout[0]);
 
-    // Left column: Table list
-    let items: Vec<ListItem> = app
-        .tables
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let style = if i == app.selected {
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(name.as_str()).style(style)
-        })
-        .collect();
+    // Left column: unified sidebar
+    let mut items: Vec<ListItem> = Vec::new();
+    // Tables
+    for (i, name) in app.tables.iter().enumerate() {
+        let style = if i == app.selected_sidebar {
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(name.as_str()).style(style));
+    }
+    // Separator
+    if !app.tables.is_empty() && !app.queries.is_empty() {
+        let sep_style = Style::default().fg(Color::DarkGray);
+        items.push(ListItem::new("────────────").style(sep_style));
+    }
+    // Queries
+    let offset = if app.tables.is_empty() { 0 } else { app.tables.len() + 1 };
+    for (i, query) in app.queries.iter().enumerate() {
+        let sidebar_idx = offset + i;
+        let style = if sidebar_idx == app.selected_sidebar {
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(query.name.as_str()).style(style));
+    }
 
-    let mut list_block = Block::default().title("Tables").borders(Borders::ALL);
+    let mut sidebar_block = Block::default().title("Views").borders(Borders::ALL);
     if !app.table_focused {
-        list_block = list_block.border_style(
+        sidebar_block = sidebar_block.border_style(
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         );
     }
-    let list = List::new(items).block(list_block);
-    frame.render_widget(list, main_layout[0]);
+    let sidebar_list = List::new(items).block(sidebar_block);
+    frame.render_widget(sidebar_list, main_layout[0]);
 
-    // Right column: Table data
-    if !app.headers.is_empty() {
-        // Compute active filter count for filter bar height
+    // Right column
+    if app.is_query_view {
+        // Query view: top textarea, bottom results table
+        let title = if app.queries.is_empty() {
+            "Query".to_string()
+        } else {
+            let q_idx = app.query_index();
+            format!("Query: {}", app.queries[q_idx].name)
+        };
+        let mut block = Block::default().title(title).borders(Borders::ALL);
+        if app.table_focused {
+            block = block.border_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        let inner = block.inner(main_layout[1]);
+        frame.render_widget(block, main_layout[1]);
+
+        // Compute filter heights for query view
+        let active_filter_count = app.filters.iter().filter(|f| f.is_some()).count() as u16;
+        let filter_bar_height = active_filter_count;
+        let type_select_height = if app.filter_mode == FilterMode::TypeSelect { 1 } else { 0 };
+        let value_input_height = if app.filter_mode == FilterMode::ValueInput { 1 } else { 0 };
+        let rename_height = if app.rename_mode { 1 } else { 0 };
+
+        let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(40)];
+        if type_select_height > 0 {
+            constraints.push(Constraint::Length(type_select_height));
+        }
+        if filter_bar_height > 0 {
+            constraints.push(Constraint::Length(filter_bar_height));
+        }
+        if value_input_height > 0 {
+            constraints.push(Constraint::Length(value_input_height));
+        }
+        constraints.push(Constraint::Fill(1));
+        if rename_height > 0 {
+            constraints.push(Constraint::Length(rename_height));
+        }
+
+        let query_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+
+        let mut layout_idx = 0;
+
+        // Textarea
+        let textarea_area = query_layout[layout_idx];
+        layout_idx += 1;
+        let mut textarea_block = Block::default().title("SQL").borders(Borders::ALL);
+        if app.table_focused && app.query_edit_mode {
+            textarea_block = textarea_block.border_style(
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            );
+        }
+        let textarea_inner = textarea_block.inner(textarea_area);
+        frame.render_widget(textarea_block, textarea_area);
+
+        // Ensure cursor visible and render text
+        let textarea_height = textarea_inner.height;
+        app.ensure_query_cursor_visible(textarea_height);
+        let visible_lines: Vec<&str> = app.query_text.lines().skip(app.query_scroll).collect();
+        let display_text = if visible_lines.len() > textarea_height as usize {
+            visible_lines[..textarea_height as usize].join("\n")
+        } else {
+            visible_lines.join("\n")
+        };
+        let query_paragraph = Paragraph::new(display_text);
+        frame.render_widget(query_paragraph, textarea_inner);
+
+        if app.table_focused && app.query_edit_mode {
+            let (line, col) = cursor_line_col(&app.query_text, app.query_cursor);
+            if line >= app.query_scroll && (line - app.query_scroll) < textarea_height as usize {
+                let cursor_x = textarea_inner.x + col as u16;
+                let cursor_y = textarea_inner.y + (line - app.query_scroll) as u16;
+                frame.set_cursor(cursor_x, cursor_y);
+            }
+        }
+
+        // Render type select dropdown
+        if app.filter_mode == FilterMode::TypeSelect {
+            let type_select_area = query_layout[layout_idx];
+            layout_idx += 1;
+            let col_name = &app.headers[app.filter_col];
+            let eq_style = if app.temp_filter_op == FilterOp::Equals {
+                Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let contains_style = if app.temp_filter_op == FilterOp::Contains {
+                Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let type_line = Line::from(vec![
+                Span::raw(format!("Filter: {} | ", col_name)),
+                Span::styled("equals", eq_style),
+                Span::raw("  "),
+                Span::styled("contains", contains_style),
+            ]);
+            let type_paragraph = Paragraph::new(type_line);
+            frame.render_widget(type_paragraph, type_select_area);
+        }
+
+        // Render active filter bar
+        if filter_bar_height > 0 {
+            let filter_bar_area = query_layout[layout_idx];
+            layout_idx += 1;
+            let filter_lines: Vec<Line> = app
+                .filters
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| {
+                    f.as_ref().map(|(op, val)| {
+                        let op_str = match op {
+                            FilterOp::Equals => "=",
+                            FilterOp::Contains => "~",
+                        };
+                        let content = format!("{}: {} {}", app.headers[i], op_str, val);
+                        Line::from(Span::styled(content, Style::default().fg(Color::DarkGray)))
+                    })
+                })
+                .collect();
+            let filter_paragraph = Paragraph::new(filter_lines);
+            frame.render_widget(filter_paragraph, filter_bar_area);
+        }
+
+        // Render value input
+        if app.filter_mode == FilterMode::ValueInput {
+            let value_input_area = query_layout[layout_idx];
+            layout_idx += 1;
+            let col_name = &app.headers[app.filter_col];
+            let op_str = match app.temp_filter_op {
+                FilterOp::Equals => "=",
+                FilterOp::Contains => "~",
+            };
+            let prefix = format!("Filter: {} {} ", col_name, op_str);
+            let value_line = Line::from(vec![
+                Span::raw(&prefix),
+                Span::styled(
+                    &app.temp_filter_value,
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+            let value_paragraph = Paragraph::new(value_line);
+            frame.render_widget(value_paragraph, value_input_area);
+
+            let cursor_x = value_input_area.x
+                + prefix.chars().count() as u16
+                + app.temp_filter_value.chars().count() as u16;
+            let cursor_y = value_input_area.y;
+            frame.set_cursor(cursor_x, cursor_y);
+        }
+
+        // Results table
+        let table_area = query_layout[layout_idx];
+        layout_idx += 1;
+        if !app.headers.is_empty() {
+            render_data_table(frame, table_area, app, "Results", &app.headers.clone(), &app.rows.clone());
+        } else {
+            let paragraph = Paragraph::new("Run query to see results")
+                .block(Block::default().title("Results").borders(Borders::ALL));
+            frame.render_widget(paragraph, table_area);
+        }
+
+        // Rename input
+        if app.rename_mode {
+            let rename_area = query_layout[layout_idx];
+            let prefix = "Rename: ";
+            let rename_line = Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(
+                    &app.rename_value,
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+            let rename_paragraph = Paragraph::new(rename_line);
+            frame.render_widget(rename_paragraph, rename_area);
+
+            let cursor_x = rename_area.x
+                + prefix.chars().count() as u16
+                + app.rename_value.chars().count() as u16;
+            let cursor_y = rename_area.y;
+            frame.set_cursor(cursor_x, cursor_y);
+        }
+    } else if !app.headers.is_empty() {
+        // Table view with filters
         let active_filter_count = app.filters.iter().filter(|f| f.is_some()).count() as u16;
         let filter_bar_height = active_filter_count;
         let type_select_height = if app.filter_mode == FilterMode::TypeSelect { 1 } else { 0 };
         let value_input_height = if app.filter_mode == FilterMode::ValueInput { 1 } else { 0 };
         let _filter_area_height = filter_bar_height + type_select_height + value_input_height;
 
-        // Compute column widths based on data
         let mut col_widths: Vec<u16> = app
             .headers
             .iter()
@@ -89,14 +297,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
             }
         }
-        // Reserve 1 char for sort arrow, then clamp to max width
         for w in &mut col_widths {
             *w = (*w + 1).min(MAX_COL_WIDTH);
         }
 
-        // Determine visible columns based on h_scroll and available width
-        let inner_width = main_layout[1].width.saturating_sub(2); // -2 for borders
-        let spacing = 1; // default column spacing
+        let inner_width = main_layout[1].width.saturating_sub(2);
+        let spacing = 1;
         let total_table_width = col_widths.iter().copied().sum::<u16>()
             + spacing * (app.headers.len().saturating_sub(1) as u16);
         app.needs_h_scroll = total_table_width > inner_width;
@@ -122,16 +328,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let title = if app.headers.len() > visible_count {
             format!(
                 "Table: {} (cols {}-{} of {})",
-                app.tables[app.selected],
+                app.tables[app.selected_sidebar],
                 app.h_scroll + 1,
                 end_col,
                 app.headers.len()
             )
         } else {
-            format!("Table: {}", app.tables[app.selected])
+            format!("Table: {}", app.tables[app.selected_sidebar])
         };
 
-        // Build and render outer block
         let mut block = Block::default().title(title).borders(Borders::ALL);
         if app.table_focused {
             block = block.border_style(
@@ -143,7 +348,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let right_inner = block.inner(main_layout[1]);
         frame.render_widget(block, main_layout[1]);
 
-        // Build constraints for the inner layout
         let mut constraints: Vec<Constraint> = Vec::new();
         if type_select_height > 0 {
             constraints.push(Constraint::Length(type_select_height));
@@ -163,7 +367,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         let mut layout_idx = 0;
 
-        // Render type select dropdown
         if app.filter_mode == FilterMode::TypeSelect {
             let type_select_area = right_layout[layout_idx];
             layout_idx += 1;
@@ -188,7 +391,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame.render_widget(type_paragraph, type_select_area);
         }
 
-        // Render active filter bar
         if filter_bar_height > 0 {
             let filter_bar_area = right_layout[layout_idx];
             layout_idx += 1;
@@ -211,7 +413,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame.render_widget(filter_paragraph, filter_bar_area);
         }
 
-        // Render value input
         if app.filter_mode == FilterMode::ValueInput {
             let value_input_area = right_layout[layout_idx];
             layout_idx += 1;
@@ -231,7 +432,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let value_paragraph = Paragraph::new(value_line);
             frame.render_widget(value_paragraph, value_input_area);
 
-            // Set cursor at end of value input
             let cursor_x = value_input_area.x
                 + prefix.chars().count() as u16
                 + app.temp_filter_value.chars().count() as u16;
@@ -239,21 +439,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame.set_cursor(cursor_x, cursor_y);
         }
 
-        // Table area (always last)
         let table_area = right_layout[layout_idx];
-
-        // Compute page_size from table area height
         app.page_size = table_area.height.saturating_sub(1) as usize;
         let end = (app.scroll_offset + app.page_size).min(app.rows.len());
 
-        // Build header cells with sort arrows and selection highlighting
         let header_cells: Vec<Cell> = visible_headers
             .iter()
             .enumerate()
             .map(|(i, h)| {
                 let width = visible_widths[i] as usize;
-
-                // Add sort arrow
                 let mut header_text = h.clone();
                 if let Some(sort_col) = app.sort_col {
                     if app.h_scroll + i == sort_col {
@@ -261,18 +455,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         header_text.push_str(arrow);
                     }
                 }
-
                 let truncated = truncate_with_ellipsis(&header_text, width);
-
                 let is_selected = app.filter_mode == FilterMode::HeaderSelect
                     && (app.h_scroll + i) == app.filter_col;
-
                 let mut cell_style =
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
                 if is_selected {
                     cell_style = cell_style.add_modifier(Modifier::REVERSED);
                 }
-
                 Cell::from(truncated).style(cell_style)
             })
             .collect();
@@ -305,7 +495,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|&w| Constraint::Length(w))
             .collect();
 
-        // Build table without block (borders are on the outer block)
         let table = Table::new(rows, &constraints).header(header);
         let table = if app.table_focused && app.filter_mode == FilterMode::None {
             table.highlight_style(
@@ -333,7 +522,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Keybind reference bar.
-    // Controls that don't change between screens are left-aligned before those that do.
     let keybinds = if app.modal_open {
         vec![
             Span::raw(" q"),
@@ -349,6 +537,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ]
     } else if app.table_focused {
         if app.filter_mode != FilterMode::None {
+            // Filter mode: shared between query view and regular tables
             match app.filter_mode {
                 FilterMode::HeaderSelect => vec![
                     Span::raw(" q"),
@@ -388,6 +577,47 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 ],
                 FilterMode::None => unreachable!(),
             }
+        } else if app.is_query_view {
+            if app.rename_mode {
+                vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc"),
+                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Enter"),
+                    Span::styled(": Rename ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Bksp"),
+                    Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
+                ]
+            } else if app.query_edit_mode {
+                vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc/Tab"),
+                    Span::styled(": Results ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+Enter"),
+                    Span::styled(": Run ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Bksp"),
+                    Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
+                ]
+            } else {
+                vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc"),
+                    Span::styled(": Views ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Tab"),
+                    Span::styled(": SQL ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("j/k"),
+                    Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("h/l"),
+                    Span::styled(": Scroll H ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("r"),
+                    Span::styled(": Rename ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("/"),
+                    Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
+                ]
+            }
         } else {
             vec![
                 Span::raw(" q"),
@@ -407,14 +637,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ]
         }
     } else {
-        vec![
+        let mut binds = vec![
             Span::raw(" q"),
             Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
             Span::raw("Tab"),
-            Span::styled(": View Table ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": View ", Style::default().fg(Color::DarkGray)),
             Span::raw("j/k"),
-            Span::styled(": Navigate", Style::default().fg(Color::DarkGray)),
-        ]
+            Span::styled(": Navigate ", Style::default().fg(Color::DarkGray)),
+            Span::raw("h/l"),
+            Span::styled(": Section", Style::default().fg(Color::DarkGray)),
+        ];
+        if app.current_is_query() {
+            binds.extend(vec![
+                Span::raw(" n"),
+                Span::styled(": New ", Style::default().fg(Color::DarkGray)),
+                Span::raw("D"),
+                Span::styled(": Del", Style::default().fg(Color::DarkGray)),
+            ]);
+        }
+        binds
     };
     let keybind_line = Line::from(keybinds);
     let keybind_bar = Paragraph::new(keybind_line);
@@ -462,14 +703,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         help_lines.push(Line::from("  ?          : Toggle Help"));
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(Span::styled(
-            "Table List",
+            "Sidebar",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        help_lines.push(Line::from("  j / Down   : Next table"));
-        help_lines.push(Line::from("  k / Up     : Previous table"));
-        help_lines.push(Line::from("  Tab / Enter: View table"));
+        help_lines.push(Line::from("  j / Down   : Next item"));
+        help_lines.push(Line::from("  k / Up     : Previous item"));
+        help_lines.push(Line::from("  Tab / Enter: View selected"));
+        help_lines.push(Line::from("  n          : New query"));
+        help_lines.push(Line::from("  D          : Delete query (in Queries)"));
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(Span::styled(
             "Table View",
@@ -482,9 +725,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         help_lines.push(Line::from("  h / Left   : Scroll left"));
         help_lines.push(Line::from("  l / Right  : Scroll right"));
         help_lines.push(Line::from("  PgUp/PgDn  : Page up / down"));
-        help_lines.push(Line::from("  Tab        : Back to table list"));
+        help_lines.push(Line::from("  Tab        : Back to sidebar"));
         help_lines.push(Line::from("  Enter      : Open FK records"));
         help_lines.push(Line::from("  /          : Filter mode"));
+        help_lines.push(Line::from(""));
+        help_lines.push(Line::from(Span::styled(
+            "Query View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        help_lines.push(Line::from("  Tab        : Edit SQL"));
+        help_lines.push(Line::from("  Esc        : Back to sidebar"));
+        help_lines.push(Line::from("  r          : Rename query"));
+        help_lines.push(Line::from("  /          : Filter mode"));
+        help_lines.push(Line::from("  j / Down   : Scroll results down"));
+        help_lines.push(Line::from("  k / Up     : Scroll results up"));
+        help_lines.push(Line::from("  h / Left   : Scroll results left"));
+        help_lines.push(Line::from("  l / Right  : Scroll results right"));
+        help_lines.push(Line::from("  PgUp/PgDn  : Page results"));
+        help_lines.push(Line::from(""));
+        help_lines.push(Line::from(Span::styled(
+            "Query Edit Mode",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        help_lines.push(Line::from("  Esc / Tab  : Back to results"));
+        help_lines.push(Line::from("  Enter      : New line"));
+        help_lines.push(Line::from("  Ctrl+Enter : Run query"));
+        help_lines.push(Line::from("  Backspace  : Delete previous"));
+        help_lines.push(Line::from("  Delete     : Delete next"));
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(Span::styled(
             "Filter Mode",
@@ -533,8 +804,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.modal_open {
         let area = centered_rect(80, 80, frame.size());
         frame.render_widget(Clear, area);
+        let title = if app.is_query_view {
+            "Row Data"
+        } else {
+            "Foreign Key Records"
+        };
         let block = Block::default()
-            .title("Foreign Key Records")
+            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow));
         frame.render_widget(block, area);
@@ -570,10 +846,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             for (i, record) in app.modal_records.iter().enumerate() {
                 let record_area = record_areas[i];
                 let is_selected = i == app.modal_selected;
-                let title = format!(
-                    "{} → {} ({} = {})",
-                    record.fk_column, record.table_name, record.ref_column, record.fk_value
-                );
+                let title = if app.is_query_view {
+                    format!("Row {} of {}", record.fk_value, app.rows.len())
+                } else {
+                    format!(
+                        "{} → {} ({} = {})",
+                        record.fk_column, record.table_name, record.ref_column, record.fk_value
+                    )
+                };
                 let mut record_block = Block::default().title(title).borders(Borders::ALL);
                 if is_selected {
                     record_block = record_block.border_style(
@@ -680,6 +960,164 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
     }
+}
+
+fn render_data_table(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    title: &str,
+    headers: &[String],
+    rows: &[Vec<String>],
+) {
+    let mut col_widths: Vec<u16> = headers.iter().map(|h| h.chars().count() as u16).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < col_widths.len() {
+                col_widths[i] = col_widths[i].max(cell.chars().count() as u16);
+            }
+        }
+    }
+    for w in &mut col_widths {
+        *w = (*w + 1).min(MAX_COL_WIDTH);
+    }
+
+    let inner_width = area.width.saturating_sub(2);
+    let spacing = 1;
+    let total_table_width = col_widths.iter().copied().sum::<u16>()
+        + spacing * (headers.len().saturating_sub(1) as u16);
+    app.needs_h_scroll = total_table_width > inner_width;
+
+    let mut visible_count = 0;
+    let mut current_width = 0;
+    for i in app.h_scroll..headers.len() {
+        if i > app.h_scroll {
+            current_width += spacing;
+        }
+        current_width += col_widths[i];
+        if current_width > inner_width && visible_count > 0 {
+            break;
+        }
+        visible_count += 1;
+    }
+    visible_count = visible_count.max(1);
+    let end_col = (app.h_scroll + visible_count).min(headers.len());
+
+    let visible_headers = &headers[app.h_scroll..end_col];
+    let visible_widths = &col_widths[app.h_scroll..end_col];
+
+    let display_title = if headers.len() > visible_count {
+        format!(
+            "{} (cols {}-{} of {})",
+            title,
+            app.h_scroll + 1,
+            end_col,
+            headers.len()
+        )
+    } else {
+        title.to_string()
+    };
+
+    let mut block = Block::default().title(display_title).borders(Borders::ALL);
+    if app.table_focused && !app.query_edit_mode {
+        block = block.border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    let table_area = block.inner(area);
+    frame.render_widget(block, area);
+
+    app.page_size = table_area.height.saturating_sub(1) as usize;
+    let end = (app.scroll_offset + app.page_size).min(rows.len());
+
+    let header_cells: Vec<Cell> = visible_headers
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let width = visible_widths[i] as usize;
+            let mut header_text = h.clone();
+            if let Some(sort_col) = app.sort_col {
+                if app.h_scroll + i == sort_col {
+                    let arrow = if app.sort_asc { " ↑" } else { " ↓" };
+                    header_text.push_str(arrow);
+                }
+            }
+            let truncated = truncate_with_ellipsis(&header_text, width);
+            let is_selected = app.filter_mode == FilterMode::HeaderSelect
+                && (app.h_scroll + i) == app.filter_col;
+            let mut cell_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+            if is_selected {
+                cell_style = cell_style.add_modifier(Modifier::REVERSED);
+            }
+            Cell::from(truncated).style(cell_style)
+        })
+        .collect();
+    let header = Row::new(header_cells).style(Style::default().add_modifier(Modifier::UNDERLINED));
+
+    let display_rows: Vec<Row> = rows[app.scroll_offset..end]
+        .iter()
+        .map(|row_data| {
+            let visible_cells = &row_data[app.h_scroll..end_col];
+            let cells: Vec<Cell> = visible_cells
+                .iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    let width = visible_widths[i] as usize;
+                    let truncated = truncate_with_ellipsis(text, width);
+                    if (app.h_scroll + i) % 2 == 0 {
+                        Cell::from(truncated)
+                    } else {
+                        Cell::from(truncated).style(Style::default().fg(COL_FG))
+                    }
+                })
+                .collect();
+            Row::new(cells)
+        })
+        .collect();
+
+    let constraints: Vec<Constraint> = visible_widths
+        .iter()
+        .map(|&w| Constraint::Length(w))
+        .collect();
+
+    let table = Table::new(display_rows, &constraints).header(header);
+    let table = if app.table_focused && !app.query_edit_mode && !app.rename_mode && app.filter_mode == FilterMode::None {
+        table.highlight_style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::REVERSED),
+        )
+    } else {
+        table
+    };
+
+    let mut render_state = TableState::new().with_selected(app.table_state.selected().and_then(|s| {
+        if s >= app.scroll_offset && s < end {
+            Some(s - app.scroll_offset)
+        } else {
+            None
+        }
+    }));
+    frame.render_stateful_widget(table, table_area, &mut render_state);
+}
+
+fn cursor_line_col(text: &str, cursor: usize) -> (usize, usize) {
+    let mut line = 0;
+    let mut col = 0;
+    for (i, ch) in text.chars().enumerate() {
+        if i >= cursor {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
 /// Compute a centered rectangle inside the given area using percentage dimensions.
