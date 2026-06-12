@@ -118,6 +118,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
         if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
             if key.code == KeyCode::Char('q') {
                 break;
+            } else if app.modal_open {
+                if key.code == KeyCode::Esc {
+                    app.close_modal();
+                }
             } else if key.code == KeyCode::Esc {
                 app.unfocus_table();
             } else if app.table_focused {
@@ -129,6 +133,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
                     KeyCode::PageDown => app.page_down(),
                     KeyCode::PageUp => app.page_up(),
+                    KeyCode::Enter => { let _ = app.open_modal(); }
                     _ => {}
                 }
             } else {

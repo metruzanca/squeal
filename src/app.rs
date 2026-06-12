@@ -8,6 +8,29 @@
 use ratatui::widgets::TableState;
 use rusqlite::{Connection, Result as SqliteResult};
 
+/// Information about a single foreign key constraint on a table.
+/// A composite key may have multiple `ForeignKeyInfo` rows with the same `id`.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ForeignKeyInfo {
+    pub id: i32,
+    pub seq: i32,
+    pub table: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// A single related record fetched for a foreign key value.
+#[derive(Debug, Clone)]
+pub struct RelatedRecord {
+    pub table_name: String,
+    pub fk_column: String,
+    pub ref_column: String,
+    pub fk_value: String,
+    pub headers: Vec<String>,
+    pub row: Vec<String>,
+}
+
 pub struct App {
     pub tables: Vec<String>,
     pub selected: usize,
@@ -21,6 +44,8 @@ pub struct App {
     pub has_more_rows: bool,
     pub page_size: usize,
     pub scroll_offset: usize,
+    pub modal_open: bool,
+    pub modal_records: Vec<RelatedRecord>,
 }
 
 impl App {
@@ -50,6 +75,8 @@ impl App {
             has_more_rows: false,
             page_size: 1,
             scroll_offset: 0,
+            modal_open: false,
+            modal_records: Vec::new(),
         };
 
         if !app.tables.is_empty() {
@@ -114,6 +141,7 @@ impl App {
         self.has_more_rows = self.rows.len() == 100;
         self.h_scroll = 0;
         self.scroll_offset = 0;
+        self.close_modal();
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
         } else {
@@ -169,6 +197,7 @@ impl App {
         self.table_focused = false;
         self.table_state = TableState::new();
         self.h_scroll = 0;
+        self.close_modal();
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -258,6 +287,100 @@ impl App {
         if self.table_focused && self.needs_h_scroll && self.h_scroll + 1 < self.headers.len() {
             self.h_scroll += 1;
         }
+    }
+
+    fn get_foreign_keys(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, Box<dyn std::error::Error>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA foreign_key_list(\"{}\")", table_name))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ForeignKeyInfo {
+                    id: row.get(0)?,
+                    seq: row.get(1)?,
+                    table: row.get(2)?,
+                    from: row.get(3)?,
+                    to: row.get(4)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<ForeignKeyInfo>>>()?;
+        Ok(rows)
+    }
+
+    pub fn open_modal(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(selected) = self.table_state.selected() else {
+            return Ok(());
+        };
+        if selected >= self.rows.len() {
+            return Ok(());
+        }
+        let table_name = &self.tables[self.selected];
+        let fks = self.get_foreign_keys(table_name)?;
+        if fks.is_empty() {
+            return Ok(());
+        }
+        let row = &self.rows[selected];
+        let mut records = Vec::new();
+        for fk in fks {
+            let col_idx = self.headers.iter().position(|h| h == &fk.from);
+            let Some(idx) = col_idx else { continue };
+            let fk_value = &row[idx];
+            if fk_value.is_empty() {
+                continue;
+            }
+            // Fetch the referenced table's headers
+            let ref_headers: Vec<String> = {
+                let mut stmt = self
+                    .conn
+                    .prepare(&format!("PRAGMA table_info(\"{}\")", fk.table))?;
+                stmt.query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<SqliteResult<Vec<String>>>()?
+            };
+            // Fetch the referenced row
+            let query = format!(
+                "SELECT * FROM \"{}\" WHERE \"{}\" = ? LIMIT 1",
+                fk.table, fk.to
+            );
+            let mut stmt = self.conn.prepare(&query)?;
+            let col_count = ref_headers.len();
+            let mut rows = stmt.query_map([fk_value.clone()], |r| {
+                let mut values = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let value = match r.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => String::new(),
+                        rusqlite::types::Value::Integer(v) => v.to_string(),
+                        rusqlite::types::Value::Real(v) => v.to_string(),
+                        rusqlite::types::Value::Text(v) => v,
+                        rusqlite::types::Value::Blob(v) => {
+                            String::from_utf8_lossy(&v).to_string()
+                        }
+                    };
+                    values.push(value);
+                }
+                Ok(values)
+            })?;
+            if let Some(Ok(related_row)) = rows.next() {
+                records.push(RelatedRecord {
+                    table_name: fk.table.clone(),
+                    fk_column: fk.from.clone(),
+                    ref_column: fk.to.clone(),
+                    fk_value: fk_value.clone(),
+                    headers: ref_headers,
+                    row: related_row,
+                });
+            }
+        }
+        self.modal_records = records;
+        self.modal_open = true;
+        Ok(())
+    }
+
+    pub fn close_modal(&mut self) {
+        self.modal_open = false;
+        self.modal_records.clear();
     }
 }
 
@@ -629,5 +752,103 @@ mod tests {
         }
         assert_eq!(app.table_state.selected(), Some(15));
         assert_eq!(app.scroll_offset, 6); // window shifted to keep cursor visible
+    }
+
+    #[test]
+    fn test_open_modal_fetches_fk_records() {
+        let conn = test_db::TestDb::in_memory_demo();
+        let mut app = App::from_connection(conn).unwrap();
+        // Navigate to orders table (should be index 2 after sorting: categories, orders, products, users)
+        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected).unwrap();
+        app.focus_table();
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.open_modal().unwrap();
+        assert!(app.modal_open);
+        assert!(!app.modal_records.is_empty());
+
+        // orders row 0 has user_id = 2 and product_id = 2 (i=1 in the loop)
+        let user_record = app
+            .modal_records
+            .iter()
+            .find(|r| r.table_name == "users");
+        assert!(user_record.is_some());
+        let user_record = user_record.unwrap();
+        assert_eq!(user_record.fk_column, "user_id");
+        assert_eq!(user_record.fk_value, "2");
+        assert_eq!(user_record.headers, vec!["id", "first_name", "last_name", "email", "age", "country", "registered_at"]);
+        assert_eq!(user_record.row[0], "2"); // id
+        assert_eq!(user_record.row[1], "Charlie"); // first_name
+
+        let product_record = app
+            .modal_records
+            .iter()
+            .find(|r| r.table_name == "products");
+        assert!(product_record.is_some());
+        let product_record = product_record.unwrap();
+        assert_eq!(product_record.fk_column, "product_id");
+        assert_eq!(product_record.fk_value, "2");
+    }
+
+    #[test]
+    fn test_close_modal() {
+        let conn = test_db::TestDb::in_memory_demo();
+        let mut app = App::from_connection(conn).unwrap();
+        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected).unwrap();
+        app.focus_table();
+        app.open_modal().unwrap();
+        assert!(app.modal_open);
+        assert!(!app.modal_records.is_empty());
+
+        app.close_modal();
+        assert!(!app.modal_open);
+        assert!(app.modal_records.is_empty());
+    }
+
+    #[test]
+    fn test_unfocus_table_closes_modal() {
+        let conn = test_db::TestDb::in_memory_demo();
+        let mut app = App::from_connection(conn).unwrap();
+        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected).unwrap();
+        app.focus_table();
+        app.open_modal().unwrap();
+        assert!(app.modal_open);
+
+        app.unfocus_table();
+        assert!(!app.modal_open);
+        assert!(app.modal_records.is_empty());
+    }
+
+    #[test]
+    fn test_load_table_closes_modal() {
+        let conn = test_db::TestDb::in_memory_demo();
+        let mut app = App::from_connection(conn).unwrap();
+        app.selected = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.load_table(app.selected).unwrap();
+        app.focus_table();
+        app.open_modal().unwrap();
+        assert!(app.modal_open);
+
+        // Load a different table
+        app.selected = app.tables.iter().position(|t| t == "users").unwrap();
+        app.load_table(app.selected).unwrap();
+        assert!(!app.modal_open);
+        assert!(app.modal_records.is_empty());
+    }
+
+    #[test]
+    fn test_open_modal_no_fks() {
+        let conn = test_db::TestDb::in_memory_demo();
+        let mut app = App::from_connection(conn).unwrap();
+        // users table has no foreign keys
+        app.selected = app.tables.iter().position(|t| t == "users").unwrap();
+        app.load_table(app.selected).unwrap();
+        app.focus_table();
+        app.open_modal().unwrap();
+        assert!(!app.modal_open);
+        assert!(app.modal_records.is_empty());
     }
 }

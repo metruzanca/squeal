@@ -7,10 +7,10 @@
 //! cell values are shown with an ellipsis.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -191,7 +191,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Keybind reference bar.
     // Controls that don't change between screens are left-aligned before those that do.
-    let keybinds = if app.table_focused {
+    let keybinds = if app.modal_open {
+        vec![
+            Span::raw(" q"),
+            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Esc"),
+            Span::styled(": Close Modal", Style::default().fg(Color::DarkGray)),
+        ]
+    } else if app.table_focused {
         vec![
             Span::raw(" q"),
             Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
@@ -202,7 +209,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Span::raw("PgUp/PgDn"),
             Span::styled(": Page ", Style::default().fg(Color::DarkGray)),
             Span::raw("h/l"),
-            Span::styled(": Scroll Left/Right", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Scroll Left/Right ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Enter"),
+            Span::styled(": FK Records", Style::default().fg(Color::DarkGray)),
         ]
     } else {
         vec![
@@ -217,6 +226,126 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let keybind_line = Line::from(keybinds);
     let keybind_bar = Paragraph::new(keybind_line);
     frame.render_widget(keybind_bar, outer_layout[1]);
+
+    // Modal overlay
+    if app.modal_open {
+        let area = centered_rect(80, 80, frame.size());
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .title("Foreign Key Records")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        frame.render_widget(block, area);
+
+        // Inner area inside the modal block borders
+        let inner = Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+
+        if app.modal_records.is_empty() {
+            let paragraph = Paragraph::new("No foreign key records found.");
+            frame.render_widget(paragraph, inner);
+        } else {
+            // Split the modal inner area into vertical chunks for each record
+            let record_count = app.modal_records.len() as u16;
+            let mut constraints = Vec::new();
+            for _ in 0..record_count {
+                constraints.push(Constraint::Length(4)); // top border + header + row + bottom border
+            }
+            constraints.push(Constraint::Fill(1)); // remaining space
+            let record_areas = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(inner);
+
+            for (i, record) in app.modal_records.iter().enumerate() {
+                let record_area = record_areas[i];
+                let title = format!(
+                    "{} → {} ({} = {})",
+                    record.fk_column, record.table_name, record.ref_column, record.fk_value
+                );
+                let record_block = Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                frame.render_widget(record_block, record_area);
+
+                // Inner area for the table (inside the record block borders)
+                let table_area = Rect::new(
+                    record_area.x + 1,
+                    record_area.y + 1,
+                    record_area.width.saturating_sub(2),
+                    record_area.height.saturating_sub(2),
+                );
+
+                // Compute column widths from headers + row data
+                let mut col_widths: Vec<u16> = record
+                    .headers
+                    .iter()
+                    .map(|h| h.chars().count() as u16)
+                    .collect();
+                for (i, cell) in record.row.iter().enumerate() {
+                    if i < col_widths.len() {
+                        col_widths[i] = col_widths[i].max(cell.chars().count() as u16);
+                    }
+                }
+                for w in &mut col_widths {
+                    *w = (*w).min(MAX_COL_WIDTH);
+                }
+
+                // Create header row
+                let header_cells: Vec<Cell> = record
+                    .headers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| {
+                        let width = col_widths[i] as usize;
+                        let truncated = truncate_with_ellipsis(h, width);
+                        Cell::from(truncated)
+                            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    })
+                    .collect();
+                let header = Row::new(header_cells)
+                    .style(Style::default().add_modifier(Modifier::UNDERLINED));
+
+                // Create single data row
+                let data_cells: Vec<Cell> = record
+                    .row
+                    .iter()
+                    .enumerate()
+                    .map(|(i, text)| {
+                        let width = col_widths[i] as usize;
+                        let truncated = truncate_with_ellipsis(text, width);
+                        Cell::from(truncated)
+                    })
+                    .collect();
+                let data_row = Row::new(data_cells);
+
+                let constraints: Vec<Constraint> =
+                    col_widths.iter().map(|&w| Constraint::Length(w)).collect();
+
+                let table = Table::new(vec![data_row], &constraints).header(header);
+                frame.render_widget(table, table_area);
+            }
+        }
+    }
+}
+
+/// Compute a centered rectangle inside the given area using percentage dimensions.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let width = area.width * percent_x / 100;
+    let height = area.height * percent_y / 100;
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    Rect::new(
+        area.x + x,
+        area.y + y,
+        width,
+        height,
+    )
 }
 
 pub fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
