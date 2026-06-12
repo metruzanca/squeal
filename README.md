@@ -4,7 +4,7 @@ A lightweight TUI SQLite database viewer built in Rust.
 
 `squeal` lets you open any SQLite database file and browse its tables directly in the terminal. It features a split-pane interface: a table list on the left and the selected table's data on the right. Navigation is vim-inspired, and large tables are lazily loaded so you can inspect databases of any size without freezing your terminal.
 
-[![asciinema](https://asciinema.org/a/Th7yS2UE30KD1IOc.svg)](https://asciinema.org/a/Th7yS2UE30KD1IOc)
+[![asciinema](.github/squeal-preview.png)](https://asciinema.org/a/Th7yS2UE30KD1IOc)
 
 ## Features
 
