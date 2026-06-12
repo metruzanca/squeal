@@ -31,6 +31,20 @@ pub struct RelatedRecord {
     pub row: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterOp {
+    Equals,
+    Contains,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterMode {
+    None,
+    HeaderSelect,
+    TypeSelect,
+    ValueInput,
+}
+
 pub struct App {
     pub tables: Vec<String>,
     pub selected: usize,
@@ -50,6 +64,13 @@ pub struct App {
     pub modal_h_scroll: usize,
     pub modal_needs_h_scroll: bool,
     pub help_open: bool,
+    pub filter_mode: FilterMode,
+    pub filter_col: usize,
+    pub filters: Vec<Option<(FilterOp, String)>>,
+    pub sort_col: Option<usize>,
+    pub sort_asc: bool,
+    pub temp_filter_op: FilterOp,
+    pub temp_filter_value: String,
 }
 
 impl App {
@@ -85,6 +106,13 @@ impl App {
             modal_h_scroll: 0,
             modal_needs_h_scroll: false,
             help_open: false,
+            filter_mode: FilterMode::None,
+            filter_col: 0,
+            filters: Vec::new(),
+            sort_col: None,
+            sort_asc: true,
+            temp_filter_op: FilterOp::Equals,
+            temp_filter_value: String::new(),
         };
 
         if !app.tables.is_empty() {
@@ -101,12 +129,50 @@ impl App {
         limit: usize,
         col_count: usize,
     ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT * FROM \"{}\" LIMIT {} OFFSET {}",
-            table_name, limit, offset
-        ))?;
+        let mut sql = format!("SELECT * FROM \"{}\"", table_name);
+
+        let active_filters: Vec<(usize, &FilterOp, &String)> = self
+            .filters
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
+            .collect();
+
+        if !active_filters.is_empty() {
+            let mut where_clauses = Vec::new();
+            for (i, op, _val) in &active_filters {
+                let clause = match op {
+                    FilterOp::Equals => {
+                        format!("CAST(\"{}\" AS TEXT) = ?", self.headers[*i])
+                    }
+                    FilterOp::Contains => {
+                        format!(
+                            "LOWER(CAST(\"{}\" AS TEXT)) LIKE LOWER('%' || ? || '%')",
+                            self.headers[*i]
+                        )
+                    }
+                };
+                where_clauses.push(clause);
+            }
+            sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
+        }
+
+        if let Some(sort_col) = self.sort_col {
+            let dir = if self.sort_asc { "ASC" } else { "DESC" };
+            sql.push_str(&format!(" ORDER BY \"{}\" {}", self.headers[sort_col], dir));
+        }
+
+        sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = active_filters
+            .iter()
+            .map(|(_, _, val)| *val as &dyn rusqlite::types::ToSql)
+            .collect();
+
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(&params[..], |row| {
                 let mut values = Vec::with_capacity(col_count);
                 for i in 0..col_count {
                     let value = match row.get::<_, rusqlite::types::Value>(i)? {
@@ -142,9 +208,18 @@ impl App {
 
         let col_count = headers.len();
 
+        // Set headers and reset filter state before fetching
+        self.headers = headers;
+        self.filters = vec![None; self.headers.len()];
+        self.filter_mode = FilterMode::None;
+        self.filter_col = 0;
+        self.sort_col = None;
+        self.sort_asc = true;
+        self.temp_filter_op = FilterOp::Equals;
+        self.temp_filter_value = String::new();
+
         let rows = self.fetch_rows(table_name, 0, 100, col_count)?;
 
-        self.headers = headers;
         self.rows = rows;
         self.has_more_rows = self.rows.len() == 100;
         self.h_scroll = 0;
@@ -206,6 +281,7 @@ impl App {
         self.table_state = TableState::new();
         self.h_scroll = 0;
         self.close_modal();
+        self.filter_mode = FilterMode::None;
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -454,6 +530,155 @@ impl App {
         if let Some(idx) = self.tables.iter().position(|t| t == &target_table) {
             self.selected = idx;
             let _ = self.load_table(idx);
+        }
+    }
+
+    // Filter mode methods
+
+    pub fn toggle_filter_mode(&mut self) {
+        if !self.table_focused {
+            return;
+        }
+        match self.filter_mode {
+            FilterMode::None => {
+                self.filter_mode = FilterMode::HeaderSelect;
+                self.filter_col = 0;
+            }
+            _ => {
+                self.cancel_filter_mode();
+            }
+        }
+    }
+
+    pub fn cancel_filter_mode(&mut self) {
+        self.filter_mode = FilterMode::None;
+        self.temp_filter_op = FilterOp::Equals;
+        self.temp_filter_value = String::new();
+    }
+
+    pub fn move_filter_col_left(&mut self) {
+        if self.filter_mode == FilterMode::HeaderSelect && self.filter_col > 0 {
+            self.filter_col -= 1;
+        }
+    }
+
+    pub fn move_filter_col_right(&mut self) {
+        if self.filter_mode == FilterMode::HeaderSelect {
+            if self.filter_col + 1 < self.headers.len() {
+                self.filter_col += 1;
+            }
+        }
+    }
+
+    pub fn cycle_sort_order(&mut self) {
+        if self.filter_mode == FilterMode::HeaderSelect {
+            match self.sort_col {
+                None => {
+                    self.sort_col = Some(self.filter_col);
+                    self.sort_asc = true;
+                }
+                Some(col) if col == self.filter_col => {
+                    if self.sort_asc {
+                        self.sort_asc = false;
+                    } else {
+                        self.sort_col = None;
+                    }
+                }
+                Some(_) => {
+                    self.sort_col = Some(self.filter_col);
+                    self.sort_asc = true;
+                }
+            }
+            let _ = self.apply_filters_and_sort();
+        }
+    }
+
+    pub fn enter_filter_for_col(&mut self) {
+        if self.filter_mode == FilterMode::HeaderSelect {
+            // Pre-populate with existing filter if any
+            if let Some((op, val)) = &self.filters[self.filter_col] {
+                self.temp_filter_op = op.clone();
+                self.temp_filter_value = val.clone();
+            } else {
+                self.temp_filter_op = FilterOp::Equals;
+                self.temp_filter_value = String::new();
+            }
+            self.filter_mode = FilterMode::TypeSelect;
+        }
+    }
+
+    pub fn toggle_filter_type(&mut self) {
+        if self.filter_mode == FilterMode::TypeSelect {
+            self.temp_filter_op = match self.temp_filter_op {
+                FilterOp::Equals => FilterOp::Contains,
+                FilterOp::Contains => FilterOp::Equals,
+            };
+        }
+    }
+
+    pub fn move_to_value_input(&mut self) {
+        if self.filter_mode == FilterMode::TypeSelect {
+            self.filter_mode = FilterMode::ValueInput;
+        }
+    }
+
+    pub fn filter_input_char(&mut self, c: char) {
+        if self.filter_mode == FilterMode::ValueInput {
+            self.temp_filter_value.push(c);
+        }
+    }
+
+    pub fn filter_input_backspace(&mut self) {
+        if self.filter_mode == FilterMode::ValueInput {
+            self.temp_filter_value.pop();
+        }
+    }
+
+    pub fn apply_filter(&mut self) {
+        if self.filter_mode == FilterMode::ValueInput {
+            if !self.temp_filter_value.is_empty() {
+                self.filters[self.filter_col] =
+                    Some((self.temp_filter_op.clone(), self.temp_filter_value.clone()));
+            }
+            self.filter_mode = FilterMode::None;
+            self.temp_filter_op = FilterOp::Equals;
+            self.temp_filter_value = String::new();
+            let _ = self.apply_filters_and_sort();
+        }
+    }
+
+    pub fn apply_filters_and_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.tables.is_empty() {
+            return Ok(());
+        }
+        let table_name = &self.tables[self.selected];
+        let col_count = self.headers.len();
+
+        self.rows = self.fetch_rows(table_name, 0, 100, col_count)?;
+        self.has_more_rows = self.rows.len() == 100;
+        self.scroll_offset = 0;
+        if self.table_focused && !self.rows.is_empty() {
+            self.table_state = TableState::new().with_selected(Some(0));
+        } else {
+            self.table_state = TableState::new();
+        }
+        Ok(())
+    }
+
+    pub fn clear_filter_for_col(&mut self, col: usize) {
+        if col < self.filters.len() {
+            self.filters[col] = None;
+            let _ = self.apply_filters_and_sort();
+        }
+    }
+
+    pub fn delete_current_filter(&mut self) {
+        if self.filter_col < self.filters.len() {
+            self.filters[self.filter_col] = None;
+            self.filter_mode = FilterMode::None;
+            self.temp_filter_op = FilterOp::Equals;
+            self.temp_filter_value = String::new();
+            let _ = self.apply_filters_and_sort();
         }
     }
 }
@@ -924,5 +1149,387 @@ mod tests {
         app.open_modal().unwrap();
         assert!(!app.modal_open);
         assert!(app.modal_records.is_empty());
+    }
+
+    // Filter mode tests
+
+    #[test]
+    fn test_filter_mode_toggle() {
+        let path = "/tmp/squeal_test_filter_toggle.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+
+        // Cannot toggle when not focused
+        app.toggle_filter_mode();
+        assert_eq!(app.filter_mode, FilterMode::None);
+
+        app.focus_table();
+        app.toggle_filter_mode();
+        assert_eq!(app.filter_mode, FilterMode::HeaderSelect);
+        assert_eq!(app.filter_col, 0);
+
+        app.toggle_filter_mode();
+        assert_eq!(app.filter_mode, FilterMode::None);
+    }
+
+    #[test]
+    fn test_filter_mode_blocked_when_not_focused() {
+        let path = "/tmp/squeal_test_filter_block.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        assert!(!app.table_focused);
+
+        app.move_filter_col_right();
+        assert_eq!(app.filter_col, 0);
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, None);
+    }
+
+    #[test]
+    fn test_cycle_sort_order() {
+        let path = "/tmp/squeal_test_sort.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+
+        // No sort -> Asc on col 0
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, Some(0));
+        assert!(app.sort_asc);
+
+        // Asc -> Desc
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, Some(0));
+        assert!(!app.sort_asc);
+
+        // Desc -> None
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, None);
+
+        // Move to col 1 and sort
+        app.move_filter_col_right();
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, Some(1));
+        assert!(app.sort_asc);
+
+        // Move back to col 0, should set new sort
+        app.move_filter_col_left();
+        app.cycle_sort_order();
+        assert_eq!(app.sort_col, Some(0));
+        assert!(app.sort_asc);
+    }
+
+    #[test]
+    fn test_filter_input() {
+        let path = "/tmp/squeal_test_filter_input.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.enter_filter_for_col();
+
+        assert_eq!(app.filter_mode, FilterMode::TypeSelect);
+        app.toggle_filter_type();
+        assert_eq!(app.temp_filter_op, FilterOp::Contains);
+        app.move_to_value_input();
+        assert_eq!(app.filter_mode, FilterMode::ValueInput);
+
+        app.filter_input_char('W');
+        app.filter_input_char('i');
+        assert_eq!(app.temp_filter_value, "Wi");
+
+        app.filter_input_backspace();
+        assert_eq!(app.temp_filter_value, "W");
+    }
+
+    #[test]
+    fn test_filter_navigation() {
+        let path = "/tmp/squeal_test_filter_nav.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+
+        assert_eq!(app.filter_mode, FilterMode::HeaderSelect);
+        app.move_filter_col_right();
+        assert_eq!(app.filter_col, 1);
+        app.move_filter_col_left();
+        assert_eq!(app.filter_col, 0);
+
+        app.enter_filter_for_col();
+        assert_eq!(app.filter_mode, FilterMode::TypeSelect);
+        app.toggle_filter_type();
+        assert_eq!(app.temp_filter_op, FilterOp::Contains);
+        app.move_to_value_input();
+        assert_eq!(app.filter_mode, FilterMode::ValueInput);
+
+        app.cancel_filter_mode();
+        assert_eq!(app.filter_mode, FilterMode::None);
+    }
+
+    #[test]
+    fn test_filter_applies_and_sorts() {
+        let path = "/tmp/squeal_test_filter_apply.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // move to title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('W');
+        app.apply_filter();
+
+        assert_eq!(app.filter_mode, FilterMode::None);
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+    }
+
+    #[test]
+    fn test_filter_empty_returns_all() {
+        let path = "/tmp/squeal_test_filter_empty.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.apply_filters_and_sort().unwrap();
+
+        assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_sort_ascending() {
+        let path = "/tmp/squeal_test_sort_asc.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // select title column
+        app.cycle_sort_order(); // asc
+        app.apply_filters_and_sort().unwrap();
+
+        assert_eq!(app.rows.len(), 2);
+        assert_eq!(app.rows[0], vec!["2", "Gadget", "19.99"]);
+        assert_eq!(app.rows[1], vec!["1", "Widget", "9.99"]);
+    }
+
+    #[test]
+    fn test_sort_descending() {
+        let path = "/tmp/squeal_test_sort_desc.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // select title column
+        app.cycle_sort_order(); // asc
+        app.cycle_sort_order(); // desc
+        app.apply_filters_and_sort().unwrap();
+
+        assert_eq!(app.rows.len(), 2);
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+        assert_eq!(app.rows[1], vec!["2", "Gadget", "19.99"]);
+    }
+
+    #[test]
+    fn test_filter_and_sort_combined() {
+        let path = "/tmp/squeal_test_filter_sort.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // move to title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('e');
+        app.apply_filter();
+
+        // Both Widget and Gadget contain 'e'
+        assert_eq!(app.rows.len(), 2);
+
+        // Now sort by title descending
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // select title column
+        app.cycle_sort_order(); // asc
+        app.cycle_sort_order(); // desc
+        app.apply_filters_and_sort().unwrap();
+
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+        assert_eq!(app.rows[1], vec!["2", "Gadget", "19.99"]);
+    }
+
+    #[test]
+    fn test_filter_case_insensitive() {
+        let path = "/tmp/squeal_test_filter_ci.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // move to title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('w');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+    }
+
+    #[test]
+    fn test_unfocus_clears_filter_mode() {
+        let path = "/tmp/squeal_test_unfocus_filter.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        assert_eq!(app.filter_mode, FilterMode::HeaderSelect);
+
+        app.unfocus_table();
+        assert_eq!(app.filter_mode, FilterMode::None);
+        assert!(!app.table_focused);
+    }
+
+    #[test]
+    fn test_filter_on_multiple_columns() {
+        let path = "/tmp/squeal_test_filter_multi.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.enter_filter_for_col(); // filter on id column
+        app.move_to_value_input();
+        app.filter_input_char('1');
+        app.apply_filter();
+
+        // Now add another filter on price using Contains
+        app.toggle_filter_mode();
+        app.move_filter_col_right();
+        app.move_filter_col_right(); // price column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('9');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+    }
+
+    #[test]
+    fn test_filter_equals() {
+        let path = "/tmp/squeal_test_filter_equals.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // title column
+        app.enter_filter_for_col();
+        // Equals is default
+        app.move_to_value_input();
+        app.filter_input_char('W');
+        app.filter_input_char('i');
+        app.filter_input_char('d');
+        app.filter_input_char('g');
+        app.filter_input_char('e');
+        app.filter_input_char('t');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
+    }
+
+    #[test]
+    fn test_clear_filter() {
+        let path = "/tmp/squeal_test_clear_filter.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('W');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+
+        app.clear_filter_for_col(1);
+        assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_current_filter() {
+        let path = "/tmp/squeal_test_delete_filter.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('W');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.filters[1], Some((FilterOp::Contains, "W".to_string())));
+
+        // Delete from HeaderSelect mode
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // move back to title column
+        app.delete_current_filter();
+
+        assert_eq!(app.filter_mode, FilterMode::None);
+        assert_eq!(app.filters[1], None);
+        assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_edit_existing_filter() {
+        let path = "/tmp/squeal_test_edit_filter.db";
+        test_db::TestDb::simple(path);
+        let mut app = App::new(path).unwrap();
+        app.focus_table();
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // title column
+        app.enter_filter_for_col();
+        app.toggle_filter_type(); // switch to Contains
+        app.move_to_value_input();
+        app.filter_input_char('W');
+        app.apply_filter();
+
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.filters[1], Some((FilterOp::Contains, "W".to_string())));
+
+        // Re-enter filter mode on same column - should edit existing filter
+        app.toggle_filter_mode();
+        app.move_filter_col_right(); // title column
+        app.enter_filter_for_col();
+
+        // Should have pre-populated with existing filter
+        assert_eq!(app.temp_filter_op, FilterOp::Contains);
+        assert_eq!(app.temp_filter_value, "W");
+        assert_eq!(app.filter_mode, FilterMode::TypeSelect);
+
+        // Change to Equals and update value
+        app.toggle_filter_type(); // switch to Equals
+        app.move_to_value_input();
+        app.filter_input_backspace(); // remove 'W'
+        app.filter_input_char('G');
+        app.filter_input_char('a');
+        app.filter_input_char('d');
+        app.filter_input_char('g');
+        app.filter_input_char('e');
+        app.filter_input_char('t');
+        app.apply_filter();
+
+        assert_eq!(app.filter_mode, FilterMode::None);
+        assert_eq!(app.filters[1], Some((FilterOp::Equals, "Gadget".to_string())));
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0], vec!["2", "Gadget", "19.99"]);
     }
 }

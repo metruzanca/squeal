@@ -14,7 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState},
 };
 
-use crate::app::App;
+use crate::app::{App, FilterMode, FilterOp};
 
 const MAX_COL_WIDTH: u16 = 30;
 const COL_FG: Color = Color::DarkGray; // muted, matches control descriptions
@@ -69,7 +69,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Right column: Table data
     if !app.headers.is_empty() {
-        let inner_width = main_layout[1].width.saturating_sub(2); // -2 for borders
+        // Compute active filter count for filter bar height
+        let active_filter_count = app.filters.iter().filter(|f| f.is_some()).count() as u16;
+        let filter_bar_height = active_filter_count;
+        let type_select_height = if app.filter_mode == FilterMode::TypeSelect { 1 } else { 0 };
+        let value_input_height = if app.filter_mode == FilterMode::ValueInput { 1 } else { 0 };
+        let _filter_area_height = filter_bar_height + type_select_height + value_input_height;
 
         // Compute column widths based on data
         let mut col_widths: Vec<u16> = app
@@ -84,12 +89,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
             }
         }
-        // Clamp to max width
+        // Reserve 1 char for sort arrow, then clamp to max width
         for w in &mut col_widths {
-            *w = (*w).min(MAX_COL_WIDTH);
+            *w = (*w + 1).min(MAX_COL_WIDTH);
         }
 
         // Determine visible columns based on h_scroll and available width
+        let inner_width = main_layout[1].width.saturating_sub(2); // -2 for borders
         let spacing = 1; // default column spacing
         let total_table_width = col_widths.iter().copied().sum::<u16>()
             + spacing * (app.headers.len().saturating_sub(1) as u16);
@@ -113,24 +119,165 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let visible_headers = &app.headers[app.h_scroll..end_col];
         let visible_widths = &col_widths[app.h_scroll..end_col];
 
+        let title = if app.headers.len() > visible_count {
+            format!(
+                "Table: {} (cols {}-{} of {})",
+                app.tables[app.selected],
+                app.h_scroll + 1,
+                end_col,
+                app.headers.len()
+            )
+        } else {
+            format!("Table: {}", app.tables[app.selected])
+        };
+
+        // Build and render outer block
+        let mut block = Block::default().title(title).borders(Borders::ALL);
+        if app.table_focused {
+            block = block.border_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        let right_inner = block.inner(main_layout[1]);
+        frame.render_widget(block, main_layout[1]);
+
+        // Build constraints for the inner layout
+        let mut constraints: Vec<Constraint> = Vec::new();
+        if type_select_height > 0 {
+            constraints.push(Constraint::Length(type_select_height));
+        }
+        if filter_bar_height > 0 {
+            constraints.push(Constraint::Length(filter_bar_height));
+        }
+        if value_input_height > 0 {
+            constraints.push(Constraint::Length(value_input_height));
+        }
+        constraints.push(Constraint::Fill(1));
+
+        let right_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(right_inner);
+
+        let mut layout_idx = 0;
+
+        // Render type select dropdown
+        if app.filter_mode == FilterMode::TypeSelect {
+            let type_select_area = right_layout[layout_idx];
+            layout_idx += 1;
+            let col_name = &app.headers[app.filter_col];
+            let eq_style = if app.temp_filter_op == FilterOp::Equals {
+                Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let contains_style = if app.temp_filter_op == FilterOp::Contains {
+                Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let type_line = Line::from(vec![
+                Span::raw(format!("Filter: {} | ", col_name)),
+                Span::styled("equals", eq_style),
+                Span::raw("  "),
+                Span::styled("contains", contains_style),
+            ]);
+            let type_paragraph = Paragraph::new(type_line);
+            frame.render_widget(type_paragraph, type_select_area);
+        }
+
+        // Render active filter bar
+        if filter_bar_height > 0 {
+            let filter_bar_area = right_layout[layout_idx];
+            layout_idx += 1;
+            let filter_lines: Vec<Line> = app
+                .filters
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| {
+                    f.as_ref().map(|(op, val)| {
+                        let op_str = match op {
+                            FilterOp::Equals => "=",
+                            FilterOp::Contains => "~",
+                        };
+                        let content = format!("{}: {} {}", app.headers[i], op_str, val);
+                        Line::from(Span::styled(content, Style::default().fg(Color::DarkGray)))
+                    })
+                })
+                .collect();
+            let filter_paragraph = Paragraph::new(filter_lines);
+            frame.render_widget(filter_paragraph, filter_bar_area);
+        }
+
+        // Render value input
+        if app.filter_mode == FilterMode::ValueInput {
+            let value_input_area = right_layout[layout_idx];
+            layout_idx += 1;
+            let col_name = &app.headers[app.filter_col];
+            let op_str = match app.temp_filter_op {
+                FilterOp::Equals => "=",
+                FilterOp::Contains => "~",
+            };
+            let prefix = format!("Filter: {} {} ", col_name, op_str);
+            let value_line = Line::from(vec![
+                Span::raw(&prefix),
+                Span::styled(
+                    &app.temp_filter_value,
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+            let value_paragraph = Paragraph::new(value_line);
+            frame.render_widget(value_paragraph, value_input_area);
+
+            // Set cursor at end of value input
+            let cursor_x = value_input_area.x
+                + prefix.chars().count() as u16
+                + app.temp_filter_value.chars().count() as u16;
+            let cursor_y = value_input_area.y;
+            frame.set_cursor(cursor_x, cursor_y);
+        }
+
+        // Table area (always last)
+        let table_area = right_layout[layout_idx];
+
+        // Compute page_size from table area height
+        app.page_size = table_area.height.saturating_sub(1) as usize;
+        let end = (app.scroll_offset + app.page_size).min(app.rows.len());
+
+        // Build header cells with sort arrows and selection highlighting
         let header_cells: Vec<Cell> = visible_headers
             .iter()
             .enumerate()
             .map(|(i, h)| {
                 let width = visible_widths[i] as usize;
-                let truncated = truncate_with_ellipsis(h, width);
-                Cell::from(truncated).style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
+
+                // Add sort arrow
+                let mut header_text = h.clone();
+                if let Some(sort_col) = app.sort_col {
+                    if app.h_scroll + i == sort_col {
+                        let arrow = if app.sort_asc { " ↑" } else { " ↓" };
+                        header_text.push_str(arrow);
+                    }
+                }
+
+                let truncated = truncate_with_ellipsis(&header_text, width);
+
+                let is_selected = app.filter_mode == FilterMode::HeaderSelect
+                    && (app.h_scroll + i) == app.filter_col;
+
+                let mut cell_style =
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+                if is_selected {
+                    cell_style = cell_style.add_modifier(Modifier::REVERSED);
+                }
+
+                Cell::from(truncated).style(cell_style)
             })
             .collect();
         let header =
             Row::new(header_cells).style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-        app.page_size = (main_layout[1].height.saturating_sub(3)) as usize;
-        let end = (app.scroll_offset + app.page_size).min(app.rows.len());
 
         let rows: Vec<Row> = app.rows[app.scroll_offset..end]
             .iter()
@@ -158,29 +305,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|&w| Constraint::Length(w))
             .collect();
 
-        let title = if app.headers.len() > visible_count {
-            format!(
-                "Table: {} (cols {}-{} of {})",
-                app.tables[app.selected],
-                app.h_scroll + 1,
-                end_col,
-                app.headers.len()
-            )
-        } else {
-            format!("Table: {}", app.tables[app.selected])
-        };
-
-        let mut block = Block::default().title(title).borders(Borders::ALL);
-        if app.table_focused {
-            block = block.border_style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-
-        let table = Table::new(rows, &constraints).header(header).block(block);
-        let table = if app.table_focused {
+        // Build table without block (borders are on the outer block)
+        let table = Table::new(rows, &constraints).header(header);
+        let table = if app.table_focused && app.filter_mode == FilterMode::None {
             table.highlight_style(
                 Style::default()
                     .fg(Color::White)
@@ -198,7 +325,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     None
                 }
             }));
-        frame.render_stateful_widget(table, main_layout[1], &mut render_state);
+        frame.render_stateful_widget(table, table_area, &mut render_state);
     } else {
         let paragraph = ratatui::widgets::Paragraph::new("No table selected or table is empty")
             .block(Block::default().title("Data").borders(Borders::ALL));
@@ -221,20 +348,64 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Span::styled(": Go to Table", Style::default().fg(Color::DarkGray)),
         ]
     } else if app.table_focused {
-        vec![
-            Span::raw(" q"),
-            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
-            Span::raw("Tab"),
-            Span::styled(": Table List ", Style::default().fg(Color::DarkGray)),
-            Span::raw("j/k"),
-            Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
-            Span::raw("PgUp/PgDn"),
-            Span::styled(": Page ", Style::default().fg(Color::DarkGray)),
-            Span::raw("h/l"),
-            Span::styled(": Scroll Left/Right ", Style::default().fg(Color::DarkGray)),
-            Span::raw("Enter"),
-            Span::styled(": FK Records", Style::default().fg(Color::DarkGray)),
-        ]
+        if app.filter_mode != FilterMode::None {
+            match app.filter_mode {
+                FilterMode::HeaderSelect => vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc"),
+                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("h/l"),
+                    Span::styled(": Column ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("j/k"),
+                    Span::styled(": Sort ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Enter"),
+                    Span::styled(": Add/Edit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Del"),
+                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                ],
+                FilterMode::TypeSelect => vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc"),
+                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("h/l/j/k"),
+                    Span::styled(": Toggle ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Enter"),
+                    Span::styled(": Value ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Del"),
+                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                ],
+                FilterMode::ValueInput => vec![
+                    Span::raw(" q"),
+                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Esc"),
+                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Enter"),
+                    Span::styled(": Apply ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Del"),
+                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                ],
+                FilterMode::None => unreachable!(),
+            }
+        } else {
+            vec![
+                Span::raw(" q"),
+                Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Tab"),
+                Span::styled(": Table List ", Style::default().fg(Color::DarkGray)),
+                Span::raw("j/k"),
+                Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
+                Span::raw("PgUp/PgDn"),
+                Span::styled(": Page ", Style::default().fg(Color::DarkGray)),
+                Span::raw("h/l"),
+                Span::styled(": Scroll Left/Right ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Enter"),
+                Span::styled(": FK Records ", Style::default().fg(Color::DarkGray)),
+                Span::raw("/"),
+                Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
+            ]
+        }
     } else {
         vec![
             Span::raw(" q"),
@@ -313,6 +484,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         help_lines.push(Line::from("  PgUp/PgDn  : Page up / down"));
         help_lines.push(Line::from("  Tab        : Back to table list"));
         help_lines.push(Line::from("  Enter      : Open FK records"));
+        help_lines.push(Line::from("  /          : Filter mode"));
+        help_lines.push(Line::from(""));
+        help_lines.push(Line::from(Span::styled(
+            "Filter Mode",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        help_lines.push(Line::from("  h / Left   : Select column"));
+        help_lines.push(Line::from("  j / Down   : Sort / toggle type"));
+        help_lines.push(Line::from("  k / Up     : Sort / toggle type"));
+        help_lines.push(Line::from("  l / Right  : Select column"));
+        help_lines.push(Line::from("  Enter      : Add/edit filter for column"));
+        help_lines.push(Line::from("  Delete     : Remove existing filter"));
+        help_lines.push(Line::from("  Esc        : Cancel and return"));
+        help_lines.push(Line::from("  /          : Toggle filter mode"));
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(Span::styled(
             "FK Records Modal",

@@ -23,7 +23,7 @@ mod ui;
 #[cfg(any(test, debug_assertions))]
 mod test_db;
 
-use app::App;
+use app::{App, FilterMode};
 use ui::draw;
 
 #[derive(Parser)]
@@ -133,20 +133,63 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     _ => {}
                 }
             } else if key.code == KeyCode::Esc {
-                app.unfocus_table();
+                if app.filter_mode != FilterMode::None {
+                    app.cancel_filter_mode();
+                } else {
+                    app.unfocus_table();
+                }
             } else if key.code == KeyCode::Char('?') {
                 app.toggle_help();
             } else if app.table_focused {
-                match key.code {
-                    KeyCode::Tab => app.unfocus_table(),
-                    KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
-                    KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
-                    KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
-                    KeyCode::PageDown => app.page_down(),
-                    KeyCode::PageUp => app.page_up(),
-                    KeyCode::Enter => { let _ = app.open_modal(); }
-                    _ => {}
+                match app.filter_mode {
+                    FilterMode::HeaderSelect => {
+                        match key.code {
+                            KeyCode::Char('/') => app.cancel_filter_mode(),
+                            KeyCode::Char('h') | KeyCode::Left => app.move_filter_col_left(),
+                            KeyCode::Char('l') | KeyCode::Right => app.move_filter_col_right(),
+                            KeyCode::Char('k') | KeyCode::Up => app.cycle_sort_order(),
+                            KeyCode::Char('j') | KeyCode::Down => app.cycle_sort_order(),
+                            KeyCode::Enter => app.enter_filter_for_col(),
+                            KeyCode::Delete => app.delete_current_filter(),
+                            _ => {}
+                        }
+                    }
+                    FilterMode::TypeSelect => {
+                        match key.code {
+                            KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type(),
+                            KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
+                            KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type(),
+                            KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
+                            KeyCode::Enter => app.move_to_value_input(),
+                            KeyCode::Esc => app.cancel_filter_mode(),
+                            KeyCode::Delete => app.delete_current_filter(),
+                            _ => {}
+                        }
+                    }
+                    FilterMode::ValueInput => {
+                        match key.code {
+                            KeyCode::Char(c) => app.filter_input_char(c),
+                            KeyCode::Backspace => app.filter_input_backspace(),
+                            KeyCode::Enter => app.apply_filter(),
+                            KeyCode::Esc => app.cancel_filter_mode(),
+                            KeyCode::Delete => app.delete_current_filter(),
+                            _ => {}
+                        }
+                    }
+                    FilterMode::None => {
+                        match key.code {
+                            KeyCode::Char('/') => app.toggle_filter_mode(),
+                            KeyCode::Tab => app.unfocus_table(),
+                            KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
+                            KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
+                            KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
+                            KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
+                            KeyCode::PageDown => app.page_down(),
+                            KeyCode::PageUp => app.page_up(),
+                            KeyCode::Enter => { let _ = app.open_modal(); }
+                            _ => {}
+                        }
+                    }
                 }
             } else {
                 match key.code {
