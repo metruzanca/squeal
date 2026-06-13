@@ -261,28 +261,67 @@ impl TestDb {
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 category_id INTEGER,
+                sku TEXT NOT NULL,
+                brand TEXT,
                 price REAL NOT NULL,
                 stock INTEGER,
+                weight REAL,
+                color TEXT,
+                material TEXT,
+                origin_country TEXT,
                 rating REAL,
+                is_active INTEGER DEFAULT 1,
                 description TEXT,
+                created_at TEXT,
+                updated_at TEXT,
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )",
             [],
         )
         .unwrap();
 
+        let brands = [
+            "Acme", "Globex", "Initech", "Umbrella", "Cyberdyne",
+            "Wonka", "Stark", "Wayne", "Oscorp", "Hooli",
+        ];
+        let colors = [
+            "Red", "Blue", "Green", "Black", "White",
+            "Silver", "Gold", "Purple", "Orange", "Yellow",
+        ];
+        let materials = [
+            "Plastic", "Metal", "Wood", "Glass", "Fabric",
+            "Carbon Fiber", "Ceramic", "Leather", "Rubber", "Silicone",
+        ];
+        let countries = [
+            "USA", "China", "Germany", "Japan", "South Korea",
+            "UK", "Taiwan", "Vietnam", "India", "Mexico",
+        ];
+
         for i in 1..=200 {
             let name = format!("Product {}", i);
             let category_id = 1 + (i % 10) as i32;
+            let sku = format!("SKU-{:04}", i);
+            let brand = brands[i % brands.len()];
             let price = 1.0 + (i as f64 * 3.7) % 999.99;
             let stock = (i % 500) as i32;
+            let weight = 0.1 + (i as f64 * 0.13) % 25.0;
+            let color = colors[i % colors.len()];
+            let material = materials[i % materials.len()];
+            let origin_country = countries[i % countries.len()];
             let rating = 1.0 + (i as f64 * 0.37) % 4.0;
+            let is_active = if i % 5 == 0 { 0 } else { 1 };
             let description = format!("Description for product {} in category {}", i, category_id);
+            let created_at = format!("2024-{:02}-{:02}", 1 + (i % 12), 1 + (i % 28));
+            let updated_at = format!("2024-{:02}-{:02}", 1 + (i % 12), 1 + ((i + 7) % 28));
 
             conn.execute(
-                "INSERT INTO products (name, category_id, price, stock, rating, description)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![name, category_id, price, stock, rating, description],
+                "INSERT INTO products (name, category_id, sku, brand, price, stock, weight, color, material, origin_country, rating, is_active, description, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                rusqlite::params![
+                    name, category_id, sku, brand, price, stock,
+                    weight, color, material, origin_country,
+                    rating, is_active, description, created_at, updated_at
+                ],
             )
             .unwrap();
         }

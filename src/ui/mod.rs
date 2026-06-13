@@ -14,7 +14,10 @@ pub mod table;
 
 use filters::{render_filter_bar, render_type_select, render_value_input};
 use helpers::{centered_rect, cursor_line_col};
-use table::{render_modal_table, render_table_with_block, render_table_widget, compute_col_widths, visible_column_range};
+use table::{
+    compute_col_widths, render_modal_table, render_table_widget, render_table_with_block,
+    visible_column_range,
+};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
@@ -58,7 +61,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let sep_style = Style::default().fg(Color::DarkGray);
         items.push(ListItem::new("────────────").style(sep_style));
     }
-    let offset = if app.tables.is_empty() { 0 } else { app.tables.len() + 1 };
+    let offset = if app.tables.is_empty() {
+        0
+    } else {
+        app.tables.len() + 1
+    };
     for (i, query) in app.queries.iter().enumerate() {
         let sidebar_idx = offset + i;
         let style = if sidebar_idx == app.selected_sidebar {
@@ -144,8 +151,16 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let active_filter_count = app.filters.iter().filter(|f| f.is_some()).count() as u16;
     let filter_bar_height = active_filter_count;
-    let type_select_height = if app.filter_mode == FilterMode::TypeSelect { 1 } else { 0 };
-    let value_input_height = if app.filter_mode == FilterMode::ValueInput { 1 } else { 0 };
+    let type_select_height = if app.filter_mode == FilterMode::TypeSelect {
+        1
+    } else {
+        0
+    };
+    let value_input_height = if app.filter_mode == FilterMode::ValueInput {
+        1
+    } else {
+        0
+    };
     let rename_height = if app.rename_mode { 1 } else { 0 };
 
     let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(40)];
@@ -176,7 +191,9 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut textarea_block = Block::default().title("SQL").borders(Borders::ALL);
     if app.table_focused && app.query_edit_mode {
         textarea_block = textarea_block.border_style(
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         );
     }
     let textarea_inner = textarea_block.inner(textarea_area);
@@ -222,7 +239,13 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let value_input_area = query_layout[layout_idx];
         layout_idx += 1;
         let col_name = &app.headers[app.filter_col];
-        render_value_input(frame, value_input_area, col_name, &app.temp_filter_op, &app.temp_filter_value);
+        render_value_input(
+            frame,
+            value_input_area,
+            col_name,
+            &app.temp_filter_op,
+            &app.temp_filter_value,
+        );
     }
 
     // Results table
@@ -259,17 +282,13 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let prefix = "Rename: ";
         let rename_line = Line::from(vec![
             Span::raw(prefix),
-            Span::styled(
-                &app.rename_value,
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(&app.rename_value, Style::default().fg(Color::White)),
         ]);
         let rename_paragraph = Paragraph::new(rename_line);
         frame.render_widget(rename_paragraph, rename_area);
 
-        let cursor_x = rename_area.x
-            + prefix.chars().count() as u16
-            + app.rename_value.chars().count() as u16;
+        let cursor_x =
+            rename_area.x + prefix.chars().count() as u16 + app.rename_value.chars().count() as u16;
         let cursor_y = rename_area.y;
         frame.set_cursor(cursor_x, cursor_y);
     }
@@ -278,8 +297,16 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
 fn draw_table_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let active_filter_count = app.filters.iter().filter(|f| f.is_some()).count() as u16;
     let filter_bar_height = active_filter_count;
-    let type_select_height = if app.filter_mode == FilterMode::TypeSelect { 1 } else { 0 };
-    let value_input_height = if app.filter_mode == FilterMode::ValueInput { 1 } else { 0 };
+    let type_select_height = if app.filter_mode == FilterMode::TypeSelect {
+        1
+    } else {
+        0
+    };
+    let value_input_height = if app.filter_mode == FilterMode::ValueInput {
+        1
+    } else {
+        0
+    };
 
     let col_widths = compute_col_widths(&app.headers, &app.rows);
     let inner_width = area.width.saturating_sub(2);
@@ -349,7 +376,13 @@ fn draw_table_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let value_input_area = right_layout[layout_idx];
         layout_idx += 1;
         let col_name = &app.headers[app.filter_col];
-        render_value_input(frame, value_input_area, col_name, &app.temp_filter_op, &app.temp_filter_value);
+        render_value_input(
+            frame,
+            value_input_area,
+            col_name,
+            &app.temp_filter_op,
+            &app.temp_filter_value,
+        );
     }
 
     let table_area = right_layout[layout_idx];
@@ -422,7 +455,7 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  l / Right  : Scroll right"));
     help_lines.push(Line::from("  PgUp/PgDn  : Page up / down"));
     help_lines.push(Line::from("  Tab        : Back to sidebar"));
-    help_lines.push(Line::from("  Enter      : Open FK records"));
+    help_lines.push(Line::from("  Enter      : Open Details"));
     help_lines.push(Line::from("  /          : Filter mode"));
     help_lines.push(Line::from(""));
     help_lines.push(Line::from(Span::styled(
@@ -469,7 +502,7 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  /          : Toggle filter mode"));
     help_lines.push(Line::from(""));
     help_lines.push(Line::from(Span::styled(
-        "FK Records Modal",
+        "Details Modal",
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -581,13 +614,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
     if app.modal_open {
         vec![
             Span::raw(" q"),
-            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Esc"),
-            Span::styled(": Close ", Style::default().fg(Color::DarkGray)),
-            Span::raw("j/k"),
-            Span::styled(": Cycle ", Style::default().fg(Color::DarkGray)),
-            Span::raw("h/l"),
-            Span::styled(": Scroll Left/Right ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Close   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Enter"),
             Span::styled(": Go to Table", Style::default().fg(Color::DarkGray)),
         ]
@@ -596,37 +625,31 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
             match app.filter_mode {
                 FilterMode::HeaderSelect => vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc"),
-                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("h/l"),
-                    Span::styled(": Column ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("j/k"),
-                    Span::styled(": Sort ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Cancel   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Enter"),
-                    Span::styled(": Add/Edit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Add/Edit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
                     Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
                 ],
                 FilterMode::TypeSelect => vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc"),
-                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("h/l/j/k"),
-                    Span::styled(": Toggle ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Cancel   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Enter"),
-                    Span::styled(": Value ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Value   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
                     Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
                 ],
                 FilterMode::ValueInput => vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc"),
-                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Cancel   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Enter"),
-                    Span::styled(": Apply ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Apply   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
                     Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
                 ],
@@ -636,39 +659,35 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
             if app.rename_mode {
                 vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc"),
-                    Span::styled(": Cancel ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Cancel   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Enter"),
-                    Span::styled(": Rename ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Bksp"),
                     Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
                 ]
             } else if app.query_edit_mode {
                 vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc/Tab"),
-                    Span::styled(": Results ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Results   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Ctrl+Enter"),
-                    Span::styled(": Run ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Run   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Bksp"),
                     Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
                 ]
             } else {
                 vec![
                     Span::raw(" q"),
-                    Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Esc"),
-                    Span::styled(": Views ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Views   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Tab"),
-                    Span::styled(": SQL ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("j/k"),
-                    Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("h/l"),
-                    Span::styled(": Scroll H ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": SQL   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("r"),
-                    Span::styled(": Rename ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("/"),
                     Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
                 ]
@@ -676,17 +695,11 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
         } else {
             vec![
                 Span::raw(" q"),
-                Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+                Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("Tab"),
-                Span::styled(": Table List ", Style::default().fg(Color::DarkGray)),
-                Span::raw("j/k"),
-                Span::styled(": Scroll ", Style::default().fg(Color::DarkGray)),
-                Span::raw("PgUp/PgDn"),
-                Span::styled(": Page ", Style::default().fg(Color::DarkGray)),
-                Span::raw("h/l"),
-                Span::styled(": Scroll Left/Right ", Style::default().fg(Color::DarkGray)),
+                Span::styled(": Table List   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("Enter"),
-                Span::styled(": FK Records ", Style::default().fg(Color::DarkGray)),
+                Span::styled(": Details   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("/"),
                 Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
             ]
@@ -694,18 +707,15 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
     } else {
         let mut binds = vec![
             Span::raw(" q"),
-            Span::styled(": Quit ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Tab"),
-            Span::styled(": View ", Style::default().fg(Color::DarkGray)),
-            Span::raw("j/k"),
-            Span::styled(": Navigate ", Style::default().fg(Color::DarkGray)),
-            Span::raw("h/l"),
-            Span::styled(": Section", Style::default().fg(Color::DarkGray)),
+            Span::styled(": View   ", Style::default().fg(Color::DarkGray)),
+
         ];
         if app.current_is_query() {
             binds.extend(vec![
                 Span::raw(" n"),
-                Span::styled(": New ", Style::default().fg(Color::DarkGray)),
+                Span::styled(": New   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("D"),
                 Span::styled(": Del", Style::default().fg(Color::DarkGray)),
             ]);
