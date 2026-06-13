@@ -5,13 +5,18 @@ use postgres::NoTls;
 use crate::driver::{DbDriver, FilterOp, ForeignKeyInfo};
 
 pub struct PostgresDriver {
-    client: postgres::Client,
+    pub client: postgres::Client,
 }
 
 impl PostgresDriver {
     pub fn new(connection_string: &str) -> Result<Self, Box<dyn Error>> {
         let client = postgres::Client::connect(connection_string, NoTls)?;
         Ok(Self { client })
+    }
+
+    pub fn execute(&mut self, sql: &str) -> Result<(), Box<dyn Error>> {
+        self.client.execute(sql, &[])?;
+        Ok(())
     }
 }
 

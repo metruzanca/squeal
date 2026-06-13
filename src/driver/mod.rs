@@ -41,3 +41,6 @@ pub trait DbDriver {
 
 pub mod sqlite;
 pub mod postgres;
+
+#[cfg(test)]
+pub mod postgres_tests;

@@ -20,3 +20,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tui-syntax = "0.6"
+
+[dev-dependencies]
+testcontainers = { version = "0.27", features = ["blocking"] }
