@@ -191,7 +191,7 @@ pub fn render_table_widget(
 
     let table = Table::new(display_rows, &constraints).header(header);
     let table = if highlight && filter_mode == FilterMode::None {
-        table.highlight_style(
+        table.row_highlight_style(
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::REVERSED),

@@ -11,7 +11,8 @@ categories = ["command-line-utilities", "database"]
 rust-version = "1.85"
 
 [dependencies]
-crossterm = "0.27"
-ratatui = "0.26"
+crossterm = "0.29"
+ratatui = "0.29"
 rusqlite = { version = "0.31", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
+tui-syntax = "0.6"

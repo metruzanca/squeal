@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1), Constraint::Length(1)])
-        .split(frame.size());
+        .split(frame.area());
 
     let max_table_name_len = app
         .tables
@@ -201,13 +201,17 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let textarea_height = textarea_inner.height;
     app.ensure_query_cursor_visible(textarea_height);
-    let visible_lines: Vec<&str> = app.query_text.lines().skip(app.query_scroll).collect();
-    let display_text = if visible_lines.len() > textarea_height as usize {
-        visible_lines[..textarea_height as usize].join("\n")
-    } else {
-        visible_lines.join("\n")
-    };
-    let query_paragraph = Paragraph::new(display_text);
+    let highlighted = app
+        .highlighter
+        .highlight("sql", &app.query_text)
+        .unwrap_or_else(|_| app.query_text.lines().map(Line::from).collect());
+    let display_lines: Vec<Line> = highlighted
+        .iter()
+        .skip(app.query_scroll)
+        .take(textarea_height as usize)
+        .cloned()
+        .collect();
+    let query_paragraph = Paragraph::new(display_lines);
     frame.render_widget(query_paragraph, textarea_inner);
 
     if app.table_focused && app.query_edit_mode {
@@ -215,7 +219,7 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
         if line >= app.query_scroll && (line - app.query_scroll) < textarea_height as usize {
             let cursor_x = textarea_inner.x + col as u16;
             let cursor_y = textarea_inner.y + (line - app.query_scroll) as u16;
-            frame.set_cursor(cursor_x, cursor_y);
+            frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 
@@ -290,7 +294,7 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let cursor_x =
             rename_area.x + prefix.chars().count() as u16 + app.rename_value.chars().count() as u16;
         let cursor_y = rename_area.y;
-        frame.set_cursor(cursor_x, cursor_y);
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
@@ -406,7 +410,7 @@ fn draw_table_view(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_help_modal(frame: &mut Frame) {
-    let area = centered_rect(60, 60, frame.size());
+    let area = centered_rect(60, 60, frame.area());
     frame.render_widget(Clear, area);
     let help_block = Block::default()
         .title("Help")
@@ -529,7 +533,7 @@ fn draw_help_modal(frame: &mut Frame) {
 }
 
 fn draw_modal(frame: &mut Frame, app: &mut App) {
-    let area = centered_rect(80, 80, frame.size());
+    let area = centered_rect(80, 80, frame.area());
     frame.render_widget(Clear, area);
     let title = if app.is_query_view {
         "Row Data"

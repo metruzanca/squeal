@@ -7,6 +7,7 @@
 
 use ratatui::widgets::TableState;
 use rusqlite::{Connection, Result as SqliteResult};
+use tui_syntax::{Highlighter, themes, sql};
 
 use crate::ui::helpers::cursor_line_col;
 
@@ -87,6 +88,7 @@ pub struct App {
     pub is_query_view: bool,
     pub rename_mode: bool,
     pub rename_value: String,
+    pub highlighter: Highlighter,
     pub save_queries: bool,
     pub all_rows: Vec<Vec<String>>,
     pub working_dir: std::path::PathBuf,
@@ -110,6 +112,9 @@ impl App {
 
         let working_dir = std::env::current_dir().unwrap_or_default();
         let queries = Self::load_queries(&working_dir);
+
+        let mut highlighter = Highlighter::new(themes::one_dark());
+        let _ = highlighter.register_language(sql());
 
         let mut app = App {
             tables,
@@ -145,6 +150,7 @@ impl App {
             is_query_view: false,
             rename_mode: false,
             rename_value: String::new(),
+            highlighter,
             save_queries: false,
             all_rows: Vec::new(),
             working_dir,

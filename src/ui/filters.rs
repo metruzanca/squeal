@@ -84,5 +84,5 @@ pub fn render_value_input(
         + prefix.chars().count() as u16
         + temp_filter_value.chars().count() as u16;
     let cursor_y = area.y;
-    frame.set_cursor(cursor_x, cursor_y);
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
