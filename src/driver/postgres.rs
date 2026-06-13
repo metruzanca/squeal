@@ -251,7 +251,7 @@ impl DbDriver for PostgresDriver {
         let mut fks = Vec::new();
         for row in rows {
             fks.push(ForeignKeyInfo {
-                id: row.get::<_, i32>(0),
+                id: row.get::<_, u32>(0) as i32,
                 seq: (row.get::<_, i64>(4) - 1) as i32,
                 from: row.get::<_, String>(1),
                 table: row.get::<_, String>(2),
