@@ -875,48 +875,43 @@ impl App {
             return Ok(());
         }
 
-        match self.conn.prepare(sql) {
-            Ok(mut stmt) => {
-                let col_count = stmt.column_count();
-                let headers: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-                match stmt.query_map([], |row| {
-                    let mut values = Vec::with_capacity(col_count);
-                    for i in 0..col_count {
-                        let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                            rusqlite::types::Value::Null => String::new(),
-                            rusqlite::types::Value::Integer(v) => v.to_string(),
-                            rusqlite::types::Value::Real(v) => v.to_string(),
-                            rusqlite::types::Value::Text(v) => v,
-                            rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(&v).to_string(),
-                        };
-                        values.push(value);
-                    }
-                    Ok(values)
-                }) {
-                    Ok(mapped) => {
-                        match mapped.collect::<SqliteResult<Vec<Vec<String>>>>() {
-                            Ok(rows) => {
-                                self.headers = headers;
-                                self.rows = rows;
-                            }
-                            Err(e) => {
-                                self.headers = vec!["Error".to_string()];
-                                self.rows = vec![vec![e.to_string()]];
-                            }
+        // Execute query inside a transaction that is never committed
+        // (auto-rollback on drop) to prevent accidental writes
+        let (headers, rows) = {
+            let tx = self.conn.transaction()?;
+            let result = match tx.prepare(sql) {
+                Ok(mut stmt) => {
+                    let col_count = stmt.column_count();
+                    let headers: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                    match stmt.query_map([], |row| {
+                        let mut values = Vec::with_capacity(col_count);
+                        for i in 0..col_count {
+                            let value = match row.get::<_, rusqlite::types::Value>(i)? {
+                                rusqlite::types::Value::Null => String::new(),
+                                rusqlite::types::Value::Integer(v) => v.to_string(),
+                                rusqlite::types::Value::Real(v) => v.to_string(),
+                                rusqlite::types::Value::Text(v) => v,
+                                rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(&v).to_string(),
+                            };
+                            values.push(value);
                         }
-                    }
-                    Err(e) => {
-                        self.headers = vec!["Error".to_string()];
-                        self.rows = vec![vec![e.to_string()]];
+                        Ok(values)
+                    }) {
+                        Ok(mapped) => match mapped.collect::<SqliteResult<Vec<Vec<String>>>>() {
+                            Ok(rows) => (headers, rows),
+                            Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
+                        },
+                        Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
                     }
                 }
-            }
-            Err(e) => {
-                self.headers = vec!["Error".to_string()];
-                self.rows = vec![vec![e.to_string()]];
-            }
-        }
+                Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
+            };
+            result
+        };
+        // tx is dropped here → any uncommitted writes are rolled back
+
+        self.headers = headers;
+        self.rows = rows;
 
         self.has_more_rows = false;
         self.h_scroll = 0;
