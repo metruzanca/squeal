@@ -146,21 +146,19 @@ pub fn render_table_widget(
         .iter()
         .enumerate()
         .map(|(i, h)| {
-            let width = visible_widths[i] as usize;
             let mut header_text = h.clone();
             if let Some(sort_col) = sort_col {
                 if h_scroll + i == sort_col {
-                    let arrow = if sort_asc { " ↑" } else { " ↓" };
+                    let arrow = if sort_asc { "↑" } else { "↓" };
                     header_text.push_str(arrow);
                 }
             }
-            let truncated = super::helpers::truncate_with_ellipsis(&header_text, width);
             let is_selected = filter_mode == FilterMode::HeaderSelect && (h_scroll + i) == filter_col;
             let mut cell_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
             if is_selected {
                 cell_style = cell_style.add_modifier(Modifier::REVERSED);
             }
-            Cell::from(truncated).style(cell_style)
+            Cell::from(header_text).style(cell_style)
         })
         .collect();
     let header = Row::new(header_cells).style(Style::default().add_modifier(Modifier::UNDERLINED));
@@ -234,10 +232,8 @@ pub fn render_modal_table(
     let header_cells: Vec<Cell> = visible_headers
         .iter()
         .enumerate()
-        .map(|(j, h)| {
-            let width = visible_widths[j] as usize;
-            let truncated = super::helpers::truncate_with_ellipsis(h, width);
-            Cell::from(truncated).style(
+        .map(|(_, h)| {
+            Cell::from(h.clone()).style(
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
