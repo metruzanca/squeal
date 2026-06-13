@@ -6,7 +6,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::FilterOp;
+use crate::driver::FilterOp;
 
 pub fn render_type_select(
     frame: &mut Frame,

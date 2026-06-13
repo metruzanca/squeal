@@ -6,22 +6,10 @@
 //! scrolling both horizontally and vertically within the data panel.
 
 use ratatui::widgets::TableState;
-use rusqlite::{Connection, Result as SqliteResult};
 use tui_syntax::{Highlighter, themes, sql};
 
+use crate::driver::{DbDriver, FilterOp};
 use crate::ui::helpers::cursor_line_col;
-
-/// Information about a single foreign key constraint on a table.
-/// A composite key may have multiple `ForeignKeyInfo` rows with the same `id`.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ForeignKeyInfo {
-    pub id: i32,
-    pub seq: i32,
-    pub table: String,
-    pub from: String,
-    pub to: String,
-}
 
 /// A single related record fetched for a foreign key value.
 #[derive(Debug, Clone)]
@@ -41,12 +29,6 @@ pub struct Query {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum FilterOp {
-    Equals,
-    Contains,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum FilterMode {
     None,
     HeaderSelect,
@@ -60,7 +42,7 @@ pub struct App {
     pub selected_sidebar: usize,
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
-    pub conn: Connection,
+    pub driver: Box<dyn DbDriver>,
     pub h_scroll: usize,
     pub table_state: TableState,
     pub table_focused: bool,
@@ -95,20 +77,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let conn = Connection::open(db_path)?;
-        let mut app = Self::from_connection(conn)?;
-        app.save_queries = true;
-        Ok(app)
-    }
-
-    pub fn from_connection(conn: Connection) -> Result<Self, Box<dyn std::error::Error>> {
-        let tables = {
-            let mut stmt = conn
-                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
-            stmt.query_map([], |row| row.get(0))?
-                .collect::<SqliteResult<Vec<String>>>()?
-        };
+    pub fn new(mut driver: Box<dyn DbDriver>) -> Result<Self, Box<dyn std::error::Error>> {
+        let tables = driver.list_tables()?;
 
         let working_dir = std::env::current_dir().unwrap_or_default();
         let queries = Self::load_queries(&working_dir);
@@ -122,7 +92,7 @@ impl App {
             selected_sidebar: 0,
             headers: Vec::new(),
             rows: Vec::new(),
-            conn,
+            driver,
             h_scroll: 0,
             table_state: TableState::new(),
             table_focused: false,
@@ -163,76 +133,6 @@ impl App {
         Ok(app)
     }
 
-    fn fetch_rows(
-        &self,
-        table_name: &str,
-        offset: usize,
-        limit: usize,
-        col_count: usize,
-    ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
-        let mut sql = format!("SELECT * FROM \"{}\"", table_name);
-
-        let active_filters: Vec<(usize, &FilterOp, &String)> = self
-            .filters
-            .iter()
-            .enumerate()
-            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
-            .collect();
-
-        if !active_filters.is_empty() {
-            let mut where_clauses = Vec::new();
-            for (i, op, _val) in &active_filters {
-                let clause = match op {
-                    FilterOp::Equals => {
-                        format!("CAST(\"{}\" AS TEXT) = ?", self.headers[*i])
-                    }
-                    FilterOp::Contains => {
-                        format!(
-                            "LOWER(CAST(\"{}\" AS TEXT)) LIKE LOWER('%' || ? || '%')",
-                            self.headers[*i]
-                        )
-                    }
-                };
-                where_clauses.push(clause);
-            }
-            sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
-        }
-
-        if let Some(sort_col) = self.sort_col {
-            let dir = if self.sort_asc { "ASC" } else { "DESC" };
-            sql.push_str(&format!(" ORDER BY \"{}\" {}", self.headers[sort_col], dir));
-        }
-
-        sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
-
-        let mut stmt = self.conn.prepare(&sql)?;
-
-        let params: Vec<&dyn rusqlite::types::ToSql> = active_filters
-            .iter()
-            .map(|(_, _, val)| *val as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let rows = stmt
-            .query_map(&params[..], |row| {
-                let mut values = Vec::with_capacity(col_count);
-                for i in 0..col_count {
-                    let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => String::new(),
-                        rusqlite::types::Value::Integer(v) => v.to_string(),
-                        rusqlite::types::Value::Real(v) => v.to_string(),
-                        rusqlite::types::Value::Text(v) => v,
-                        rusqlite::types::Value::Blob(v) => {
-                            String::from_utf8_lossy(&v).to_string()
-                        }
-                    };
-                    values.push(value);
-                }
-                Ok(values)
-            })?
-            .collect::<SqliteResult<Vec<Vec<String>>>>()?;
-        Ok(rows)
-    }
-
     pub fn load_table(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
         if index >= self.tables.len() {
             return Ok(());
@@ -242,15 +142,7 @@ impl App {
         self.query_edit_mode = false;
         let table_name = &self.tables[index];
 
-        let headers = {
-            let mut stmt = self
-                .conn
-                .prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
-            stmt.query_map([], |row| row.get::<_, String>(1))?
-                .collect::<SqliteResult<Vec<String>>>()?
-        };
-
-        let col_count = headers.len();
+        let headers = self.driver.table_columns(table_name)?;
 
         // Set headers and reset filter state before fetching
         self.headers = headers;
@@ -262,7 +154,9 @@ impl App {
         self.temp_filter_op = FilterOp::Equals;
         self.temp_filter_value = String::new();
 
-        let rows = self.fetch_rows(table_name, 0, 100, col_count)?;
+        let rows = self
+            .driver
+            .fetch_rows(table_name, &self.headers, &self.filters, None, true, 0, 100)?;
 
         self.rows = rows;
         self.has_more_rows = self.rows.len() == 100;
@@ -283,10 +177,17 @@ impl App {
             return Ok(());
         }
         let table_name = &self.tables[self.selected_sidebar];
-        let col_count = self.headers.len();
         let offset = self.rows.len();
 
-        let new_rows = self.fetch_rows(table_name, offset, 100, col_count)?;
+        let new_rows = self.driver.fetch_rows(
+            table_name,
+            &self.headers,
+            &self.filters,
+            self.sort_col,
+            self.sort_asc,
+            offset,
+            100,
+        )?;
         self.has_more_rows = new_rows.len() == 100;
         self.rows.extend(new_rows);
         Ok(())
@@ -457,27 +358,6 @@ impl App {
         }
     }
 
-    fn get_foreign_keys(
-        &self,
-        table_name: &str,
-    ) -> Result<Vec<ForeignKeyInfo>, Box<dyn std::error::Error>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("PRAGMA foreign_key_list(\"{}\")", table_name))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ForeignKeyInfo {
-                    id: row.get(0)?,
-                    seq: row.get(1)?,
-                    table: row.get(2)?,
-                    from: row.get(3)?,
-                    to: row.get(4)?,
-                })
-            })?
-            .collect::<SqliteResult<Vec<ForeignKeyInfo>>>()?;
-        Ok(rows)
-    }
-
     pub fn open_modal(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(selected) = self.table_state.selected() else {
             return Ok(());
@@ -504,7 +384,7 @@ impl App {
             return Ok(());
         }
         let table_name = &self.tables[self.selected_sidebar];
-        let fks = self.get_foreign_keys(table_name)?;
+        let fks = self.driver.get_foreign_keys(table_name)?;
         if fks.is_empty() {
             return Ok(());
         }
@@ -517,45 +397,16 @@ impl App {
             if fk_value.is_empty() {
                 continue;
             }
-            // Fetch the referenced table's headers
-            let ref_headers: Vec<String> = {
-                let mut stmt = self
-                    .conn
-                    .prepare(&format!("PRAGMA table_info(\"{}\")", fk.table))?;
-                stmt.query_map([], |row| row.get::<_, String>(1))?
-                    .collect::<SqliteResult<Vec<String>>>()?
-            };
-            // Fetch the referenced row
-            let query = format!(
-                "SELECT * FROM \"{}\" WHERE \"{}\" = ? LIMIT 1",
-                fk.table, fk.to
-            );
-            let mut stmt = self.conn.prepare(&query)?;
-            let col_count = ref_headers.len();
-            let mut rows = stmt.query_map([fk_value.clone()], |r| {
-                let mut values = Vec::with_capacity(col_count);
-                for i in 0..col_count {
-                    let value = match r.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => String::new(),
-                        rusqlite::types::Value::Integer(v) => v.to_string(),
-                        rusqlite::types::Value::Real(v) => v.to_string(),
-                        rusqlite::types::Value::Text(v) => v,
-                        rusqlite::types::Value::Blob(v) => {
-                            String::from_utf8_lossy(&v).to_string()
-                        }
-                    };
-                    values.push(value);
-                }
-                Ok(values)
-            })?;
-            if let Some(Ok(related_row)) = rows.next() {
+            if let Some((ref_headers, ref_row)) =
+                self.driver.fetch_related_record(&fk.table, &fk.to, fk_value)?
+            {
                 records.push(RelatedRecord {
                     table_name: fk.table.clone(),
                     fk_column: fk.from.clone(),
                     ref_column: fk.to.clone(),
                     fk_value: fk_value.clone(),
                     headers: ref_headers,
-                    row: related_row,
+                    row: ref_row,
                 });
             }
         }
@@ -756,9 +607,16 @@ impl App {
             return Ok(());
         }
         let table_name = &self.tables[self.selected_sidebar];
-        let col_count = self.headers.len();
 
-        self.rows = self.fetch_rows(table_name, 0, 100, col_count)?;
+        self.rows = self.driver.fetch_rows(
+            table_name,
+            &self.headers,
+            &self.filters,
+            self.sort_col,
+            self.sort_asc,
+            0,
+            100,
+        )?;
         self.has_more_rows = self.rows.len() == 100;
         self.scroll_offset = 0;
         if self.table_focused && !self.rows.is_empty() {
@@ -881,40 +739,7 @@ impl App {
             return Ok(());
         }
 
-        // Execute query inside a transaction that is never committed
-        // (auto-rollback on drop) to prevent accidental writes
-        let (headers, rows) = {
-            let tx = self.conn.transaction()?;
-            let result = match tx.prepare(sql) {
-                Ok(mut stmt) => {
-                    let col_count = stmt.column_count();
-                    let headers: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-                    match stmt.query_map([], |row| {
-                        let mut values = Vec::with_capacity(col_count);
-                        for i in 0..col_count {
-                            let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                                rusqlite::types::Value::Null => String::new(),
-                                rusqlite::types::Value::Integer(v) => v.to_string(),
-                                rusqlite::types::Value::Real(v) => v.to_string(),
-                                rusqlite::types::Value::Text(v) => v,
-                                rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(&v).to_string(),
-                            };
-                            values.push(value);
-                        }
-                        Ok(values)
-                    }) {
-                        Ok(mapped) => match mapped.collect::<SqliteResult<Vec<Vec<String>>>>() {
-                            Ok(rows) => (headers, rows),
-                            Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
-                        },
-                        Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
-                    }
-                }
-                Err(e) => (vec!["Error".to_string()], vec![vec![e.to_string()]]),
-            };
-            result
-        };
-        // tx is dropped here → any uncommitted writes are rolled back
+        let (headers, rows) = self.driver.run_query(sql)?;
 
         self.headers = headers;
         self.rows = rows;
@@ -1252,6 +1077,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::sqlite::SQLiteDriver;
     use crate::test_db;
 
     impl App {
@@ -1267,7 +1093,7 @@ mod tests {
     fn test_app_new_loads_tables() {
         let path = "/tmp/squeal_test.db";
         test_db::TestDb::simple(path);
-        let app = App::new(path).unwrap();
+        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.tables, vec!["products", "users"]);
         assert_eq!(app.headers, vec!["id", "title", "price"]);
         assert_eq!(app.rows.len(), 2);
@@ -1278,7 +1104,7 @@ mod tests {
     fn test_app_navigation() {
         let path = "/tmp/squeal_test_nav.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.selected_sidebar, 0);
         assert_eq!(app.tables[app.selected_sidebar], "products");
 
@@ -1301,7 +1127,7 @@ mod tests {
     fn test_app_empty_db() {
         let path = "/tmp/squeal_test_empty.db";
         test_db::TestDb::empty(path);
-        let app = App::new(path).unwrap();
+        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert!(app.tables.is_empty());
         assert!(app.headers.is_empty());
         assert!(app.rows.is_empty());
@@ -1311,7 +1137,7 @@ mod tests {
     fn test_app_large_db() {
         let path = "/tmp/squeal_test_large.db";
         test_db::TestDb::large(path, 150);
-        let app = App::new(path).unwrap();
+        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.tables, vec!["items"]);
         assert_eq!(app.headers, vec!["id", "name", "value"]);
         assert_eq!(app.rows.len(), 100); // limited to 100 rows initially
@@ -1321,7 +1147,7 @@ mod tests {
     fn test_app_wide_db() {
         let path = "/tmp/squeal_test_wide.db";
         test_db::TestDb::wide(path);
-        let app = App::new(path).unwrap();
+        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.tables, vec!["wide_table"]);
         assert_eq!(app.headers.len(), 10);
         assert_eq!(app.rows.len(), 2);
@@ -1330,7 +1156,7 @@ mod tests {
     #[test]
     fn test_app_in_memory_demo() {
         let conn = test_db::TestDb::in_memory_simple();
-        let app = App::from_connection(conn).unwrap();
+        let app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         assert_eq!(app.tables, vec!["products", "users"]);
         assert_eq!(app.headers, vec!["id", "title", "price"]);
         assert_eq!(app.rows.len(), 2);
@@ -1341,7 +1167,7 @@ mod tests {
     fn test_focus_and_unfocus() {
         let path = "/tmp/squeal_test_focus.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert!(!app.table_focused);
         assert_eq!(app.table_state.selected(), None);
 
@@ -1376,7 +1202,7 @@ mod tests {
     fn test_navigation_blocked_when_focused() {
         let path = "/tmp/squeal_test_nav_block.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         assert!(app.table_focused);
         assert_eq!(app.selected_sidebar, 0);
@@ -1391,7 +1217,7 @@ mod tests {
     fn test_fetch_more_rows() {
         let path = "/tmp/squeal_test_fetch_more.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.rows.len(), 100);
         assert!(app.has_more_rows);
 
@@ -1413,7 +1239,7 @@ mod tests {
     fn test_scroll_table_down_fetches_more() {
         let path = "/tmp/squeal_test_scroll_fetch.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
 
         // Scroll to bottom of first batch
@@ -1461,7 +1287,7 @@ mod tests {
     fn test_small_table_no_fetch() {
         let path = "/tmp/squeal_test_small_no_fetch.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
 
         // products has 2 rows, so has_more_rows should be false
@@ -1478,7 +1304,7 @@ mod tests {
     fn test_page_down_scrolls_view_and_preserves_visual_position() {
         let path = "/tmp/squeal_test_page_down.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1496,7 +1322,7 @@ mod tests {
     fn test_page_up_preserves_visual_position() {
         let path = "/tmp/squeal_test_page_up.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 50;
@@ -1512,7 +1338,7 @@ mod tests {
         // 15 rows with page_size=10: pages 0-9, 10-14
         let path = "/tmp/squeal_test_page_down_clamp.db";
         test_db::TestDb::large(path, 15);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 0;
@@ -1527,7 +1353,7 @@ mod tests {
     fn test_page_up_at_top_is_noop() {
         let path = "/tmp/squeal_test_page_up_clamp.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 0;
@@ -1542,7 +1368,7 @@ mod tests {
     fn test_page_down_to_last_page_preserves_visual_position() {
         let path = "/tmp/squeal_test_small_final.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1561,7 +1387,7 @@ mod tests {
     fn test_page_up_from_last_page_preserves_visual_position() {
         let path = "/tmp/squeal_test_up_from_bottom.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1585,7 +1411,7 @@ mod tests {
     fn test_page_down_from_last_page_is_noop() {
         let path = "/tmp/squeal_test_page_down_noop.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1601,7 +1427,7 @@ mod tests {
         // 15 rows with page_size=10: pages 0-9, 10-14
         let path = "/tmp/squeal_test_up_from_partial.db";
         test_db::TestDb::large(path, 15);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1616,7 +1442,7 @@ mod tests {
     fn test_scroll_table_down_keeps_cursor_visible() {
         let path = "/tmp/squeal_test_cursor_vis.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -1631,7 +1457,7 @@ mod tests {
     #[test]
     fn test_open_modal_fetches_fk_records() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::from_connection(conn).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         // Navigate to orders table (should be index 2 after sorting: categories, orders, products, users)
         app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
@@ -1668,7 +1494,7 @@ mod tests {
     #[test]
     fn test_close_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::from_connection(conn).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -1684,7 +1510,7 @@ mod tests {
     #[test]
     fn test_unfocus_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::from_connection(conn).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -1699,7 +1525,7 @@ mod tests {
     #[test]
     fn test_load_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::from_connection(conn).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -1716,7 +1542,7 @@ mod tests {
     #[test]
     fn test_open_modal_no_fks() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::from_connection(conn).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         // users table has no foreign keys
         app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
@@ -1732,7 +1558,7 @@ mod tests {
     fn test_filter_mode_toggle() {
         let path = "/tmp/squeal_test_filter_toggle.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
 
         // Cannot toggle when not focused
         app.toggle_filter_mode();
@@ -1751,7 +1577,7 @@ mod tests {
     fn test_filter_mode_blocked_when_not_focused() {
         let path = "/tmp/squeal_test_filter_block.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert!(!app.table_focused);
 
         app.move_filter_col_right();
@@ -1764,7 +1590,7 @@ mod tests {
     fn test_cycle_sort_order() {
         let path = "/tmp/squeal_test_sort.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
 
@@ -1799,7 +1625,7 @@ mod tests {
     fn test_filter_input() {
         let path = "/tmp/squeal_test_filter_input.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.enter_filter_for_col();
@@ -1822,7 +1648,7 @@ mod tests {
     fn test_filter_navigation() {
         let path = "/tmp/squeal_test_filter_nav.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
 
@@ -1847,7 +1673,7 @@ mod tests {
     fn test_filter_applies_and_sorts() {
         let path = "/tmp/squeal_test_filter_apply.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -1866,7 +1692,7 @@ mod tests {
     fn test_filter_empty_returns_all() {
         let path = "/tmp/squeal_test_filter_empty.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.apply_filters_and_sort().unwrap();
@@ -1878,7 +1704,7 @@ mod tests {
     fn test_sort_ascending() {
         let path = "/tmp/squeal_test_sort_asc.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // select title column
@@ -1894,7 +1720,7 @@ mod tests {
     fn test_sort_descending() {
         let path = "/tmp/squeal_test_sort_desc.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // select title column
@@ -1911,7 +1737,7 @@ mod tests {
     fn test_filter_and_sort_combined() {
         let path = "/tmp/squeal_test_filter_sort.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -1939,7 +1765,7 @@ mod tests {
     fn test_filter_case_insensitive() {
         let path = "/tmp/squeal_test_filter_ci.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -1957,7 +1783,7 @@ mod tests {
     fn test_unfocus_clears_filter_mode() {
         let path = "/tmp/squeal_test_unfocus_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         assert_eq!(app.filter_mode, FilterMode::HeaderSelect);
@@ -1971,7 +1797,7 @@ mod tests {
     fn test_filter_on_multiple_columns() {
         let path = "/tmp/squeal_test_filter_multi.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.enter_filter_for_col(); // filter on id column
@@ -1997,7 +1823,7 @@ mod tests {
     fn test_filter_equals() {
         let path = "/tmp/squeal_test_filter_equals.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -2020,7 +1846,7 @@ mod tests {
     fn test_clear_filter() {
         let path = "/tmp/squeal_test_clear_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -2040,7 +1866,7 @@ mod tests {
     fn test_delete_current_filter() {
         let path = "/tmp/squeal_test_delete_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -2067,7 +1893,7 @@ mod tests {
     fn test_edit_existing_filter() {
         let path = "/tmp/squeal_test_edit_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(path).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column

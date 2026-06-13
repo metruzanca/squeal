@@ -18,21 +18,24 @@ use ratatui::{
 use clap::Parser;
 
 mod app;
+mod driver;
 mod ui;
 
 mod test_db;
 
 use app::{App, FilterMode};
+use driver::{sqlite::SQLiteDriver, postgres::PostgresDriver};
 use ui::draw;
 
 #[derive(Parser)]
 #[command(name = "squeal")]
-#[command(about = "A TUI SQLite database viewer")]
+#[command(about = "A TUI database viewer")]
 struct Cli {
-    /// Path to the SQLite database file
+    /// Database connection string or path
+    /// Auto-detects: postgres://... for PostgreSQL, otherwise SQLite
     path: Option<String>,
 
-    /// Start with an in-memory demo database
+    /// Start with an in-memory demo SQLite database
     #[arg(long)]
     demo: bool,
 }
@@ -56,7 +59,8 @@ fn build_app(cli: &Cli) -> App {
 
     if cli.demo {
         let conn = test_db::TestDb::in_memory_demo();
-        match App::from_connection(conn) {
+        let driver = SQLiteDriver::from_connection(conn);
+        match App::new(Box::new(driver)) {
             Ok(app) => app,
             Err(e) => {
                 eprintln!("Error creating demo database: {}", e);
@@ -64,7 +68,24 @@ fn build_app(cli: &Cli) -> App {
             }
         }
     } else if let Some(path) = cli.path.as_deref() {
-        match App::new(path) {
+        let driver: Box<dyn driver::DbDriver> = if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+            match PostgresDriver::new(path) {
+                Ok(driver) => Box::new(driver),
+                Err(e) => {
+                    eprintln!("Error connecting to PostgreSQL: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            match SQLiteDriver::new(path) {
+                Ok(driver) => Box::new(driver),
+                Err(e) => {
+                    eprintln!("Error opening SQLite database: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        };
+        match App::new(driver) {
             Ok(app) => app,
             Err(e) => {
                 eprintln!("Error opening database: {}", e);
@@ -72,7 +93,9 @@ fn build_app(cli: &Cli) -> App {
             }
         }
     } else {
-        eprintln!("Usage: squeal <sqlite-file> or squeal --demo");
+        eprintln!("Usage: squeal <database> or squeal --demo");
+        eprintln!("  SQLite:   squeal my-database.db");
+        eprintln!("  Postgres: squeal postgres://user:pass@host/db");
         std::process::exit(1);
     }
 }

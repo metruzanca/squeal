@@ -14,5 +14,6 @@ rust-version = "1.85"
 crossterm = "0.29"
 ratatui = "0.29"
 rusqlite = { version = "0.31", features = ["bundled"] }
+postgres = "0.19"
 clap = { version = "4", features = ["derive"] }
 tui-syntax = "0.6"
