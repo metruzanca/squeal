@@ -2,6 +2,9 @@
 - Before committing make sure build compiles.
 - Never commit changes unless instructed to explicitly.
 - Commit using conventional commits.
+- Commiting a bugfix; message title should explain the bug from a user perspective (what failed). Technical details and root cause go in the body.
+  - Good: `fix(postgres): pressing Enter on a row panics when opening details modal`
+  - Bad: `fix(postgres): use u32 for pg_constraint oid instead of i32`
 
 # Releases
 
