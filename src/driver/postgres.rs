@@ -15,6 +15,12 @@ impl PostgresDriver {
     }
 }
 
+/// Escape double quotes in a PostgreSQL identifier so it can be safely
+/// embedded in a double-quoted identifier.
+fn escape_ident(s: &str) -> String {
+    s.replace('"', "\"\"")
+}
+
 fn row_value_to_string(row: &postgres::Row, idx: usize) -> String {
     row.try_get::<_, Option<String>>(idx)
         .ok()
@@ -55,7 +61,43 @@ fn row_value_to_string(row: &postgres::Row, idx: usize) -> String {
                 .flatten()
                 .map(|v| v.to_string())
         })
-        .unwrap_or_default()
+        .or_else(|| {
+            row.try_get::<_, Option<uuid::Uuid>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+        })
+        .or_else(|| {
+            row.try_get::<_, Option<chrono::NaiveDateTime>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+        })
+        .or_else(|| {
+            row.try_get::<_, Option<chrono::NaiveDate>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+        })
+        .or_else(|| {
+            row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+        })
+        .or_else(|| {
+            row.try_get::<_, Option<serde_json::Value>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
+        })
+        .or_else(|| {
+            row.try_get::<_, Option<Vec<u8>>>(idx)
+                .ok()
+                .flatten()
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        })
+        .unwrap_or_else(|| String::new())
 }
 
 impl DbDriver for PostgresDriver {
@@ -91,7 +133,7 @@ impl DbDriver for PostgresDriver {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let mut sql = format!("SELECT * FROM \"{}\"", table_name);
+        let mut sql = format!("SELECT * FROM \"{}\"", escape_ident(table_name));
 
         let active_filters: Vec<(usize, &FilterOp, &String)> = filters
             .iter()
@@ -105,14 +147,15 @@ impl DbDriver for PostgresDriver {
             let mut where_clauses = Vec::new();
             for (i, op, _val) in &active_filters {
                 let param_idx = params.len() + 1;
+                let col = escape_ident(&headers[*i]);
                 let clause = match op {
                     FilterOp::Equals => {
-                        format!("CAST(\"{}\" AS TEXT) = ${}", headers[*i], param_idx)
+                        format!("CAST(\"{}\" AS TEXT) = ${}", col, param_idx)
                     }
                     FilterOp::Contains => {
                         format!(
                             "CAST(\"{}\" AS TEXT) ILIKE '%' || ${} || '%'",
-                            headers[*i], param_idx
+                            col, param_idx
                         )
                     }
                 };
@@ -124,7 +167,8 @@ impl DbDriver for PostgresDriver {
 
         if let Some(sort_col) = sort_col {
             let dir = if sort_asc { "ASC" } else { "DESC" };
-            sql.push_str(&format!(" ORDER BY \"{}\" {}", headers[sort_col], dir));
+            let col = escape_ident(&headers[sort_col]);
+            sql.push_str(&format!(" ORDER BY \"{}\" {}", col, dir));
         }
 
         sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
@@ -186,28 +230,29 @@ impl DbDriver for PostgresDriver {
     fn get_foreign_keys(&mut self, table_name: &str) -> Result<Vec<ForeignKeyInfo>, Box<dyn Error>> {
         let rows = self.client.query(
             "SELECT \
-                con.conname AS constraint_name, \
+                con.oid AS con_oid, \
                 a.attname AS from_col, \
                 c.relname AS ref_table, \
                 af.attname AS to_col, \
-                i.ord \
+                u.ord \
              FROM pg_constraint con \
              JOIN pg_class cl ON con.conrelid = cl.oid \
              JOIN pg_namespace n ON cl.relnamespace = n.oid \
              JOIN pg_class c ON con.confrelid = c.oid \
-             JOIN generate_series(1, array_length(con.conkey, 1)) AS i(ord) ON true \
-             JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = con.conkey[i.ord] \
-             JOIN pg_attribute af ON af.attrelid = c.oid AND af.attnum = con.confkey[i.ord] \
+             CROSS JOIN LATERAL UNNEST(con.conkey, con.confkey) \
+                 WITH ORDINALITY AS u(local_num, ref_num, ord) \
+             JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = u.local_num \
+             JOIN pg_attribute af ON af.attrelid = c.oid AND af.attnum = u.ref_num \
              WHERE cl.relname = $1 AND con.contype = 'f' AND n.nspname = 'public' \
-             ORDER BY con.conname, i.ord",
+             ORDER BY con.conname, u.ord",
             &[&table_name],
         )?;
 
         let mut fks = Vec::new();
         for row in rows {
             fks.push(ForeignKeyInfo {
-                id: 0,
-                seq: row.get::<_, i32>(4),
+                id: row.get::<_, i32>(0),
+                seq: (row.get::<_, i64>(4) - 1) as i32,
                 from: row.get::<_, String>(1),
                 table: row.get::<_, String>(2),
                 to: row.get::<_, String>(3),
@@ -231,8 +276,9 @@ impl DbDriver for PostgresDriver {
         let headers: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
 
         let query = format!(
-            "SELECT * FROM \"{}\" WHERE \"{}\" = $1 LIMIT 1",
-            table_name, ref_column
+            "SELECT * FROM \"{}\" WHERE CAST(\"{}\" AS TEXT) = $1 LIMIT 1",
+            escape_ident(table_name),
+            escape_ident(ref_column)
         );
         let stmt = self.client.prepare(&query)?;
         let rows = self.client.query(&stmt, &[&fk_value])?;
