@@ -385,10 +385,23 @@ impl App {
         }
         let table_name = &self.tables[self.selected_sidebar];
         let fks = self.driver.get_foreign_keys(table_name)?;
+        let row = &self.rows[selected];
         if fks.is_empty() {
+            // No FKs: show the current row data as a detail view
+            self.modal_records = vec![RelatedRecord {
+                table_name: table_name.clone(),
+                fk_column: "Row".to_string(),
+                ref_column: "Data".to_string(),
+                fk_value: (selected + 1).to_string(),
+                headers: self.headers.clone(),
+                row: row.clone(),
+            }];
+            self.modal_open = true;
+            self.modal_selected = 0;
+            self.modal_h_scroll = 0;
+            self.modal_needs_h_scroll = false;
             return Ok(());
         }
-        let row = &self.rows[selected];
         let mut records = Vec::new();
         for fk in fks {
             let col_idx = self.headers.iter().position(|h| h == &fk.from);
@@ -1543,13 +1556,15 @@ mod tests {
     fn test_open_modal_no_fks() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
-        // users table has no foreign keys
+        // users table has no foreign keys - should show row details instead
         app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
-        assert!(!app.modal_open);
-        assert!(app.modal_records.is_empty());
+        assert!(app.modal_open);
+        assert_eq!(app.modal_records.len(), 1);
+        assert_eq!(app.modal_records[0].table_name, "users");
+        assert_eq!(app.modal_records[0].headers, vec!["id", "first_name", "last_name", "email", "age", "country", "registered_at"]);
     }
 
     // Filter mode tests
