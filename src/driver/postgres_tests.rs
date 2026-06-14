@@ -10,6 +10,17 @@ mod tests {
     use crate::driver::{DbDriver, FilterOp};
     use crate::driver::postgres::PostgresDriver;
 
+    fn wait_for_postgres(port: u16) -> Result<(), Box<dyn Error>> {
+        let url = format!("postgres://test:test@localhost:{}/test", port);
+        for _ in 0..30 {
+            if postgres::Client::connect(&url, postgres::NoTls).is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+        Err("Postgres did not become ready in time".into())
+    }
+
     fn start_postgres() -> Result<(String, testcontainers::Container<GenericImage>), Box<dyn Error>> {
         let container = GenericImage::new("postgres", "16")
             .with_exposed_port(ContainerPort::Tcp(5432))
@@ -18,10 +29,9 @@ mod tests {
             .with_env_var("POSTGRES_DB", "test")
             .start()?;
 
-        // Wait for postgres to be ready
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
         let port = container.get_host_port_ipv4(ContainerPort::Tcp(5432))?;
+        wait_for_postgres(port)?;
+
         let url = format!("postgres://test:test@localhost:{}/test", port);
         Ok((url, container))
     }
