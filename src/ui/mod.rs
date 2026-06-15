@@ -231,7 +231,8 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let type_select_area = query_layout[layout_idx];
         layout_idx += 1;
         let col_name = &app.headers[app.filter_col];
-        render_type_select(frame, type_select_area, col_name, &app.temp_filter_op);
+        let col_type = app.column_types.get(app.filter_col).cloned().unwrap_or(crate::driver::ColumnType::Other);
+        render_type_select(frame, type_select_area, col_name, &app.temp_filter_op, &col_type);
     }
 
     // Render active filter bar
@@ -370,7 +371,8 @@ fn draw_table_view(frame: &mut Frame, area: Rect, app: &mut App) {
         let type_select_area = right_layout[layout_idx];
         layout_idx += 1;
         let col_name = &app.headers[app.filter_col];
-        render_type_select(frame, type_select_area, col_name, &app.temp_filter_op);
+        let col_type = app.column_types.get(app.filter_col).cloned().unwrap_or(crate::driver::ColumnType::Other);
+        render_type_select(frame, type_select_area, col_name, &app.temp_filter_op, &col_type);
     }
 
     if filter_bar_height > 0 {
@@ -499,10 +501,10 @@ fn draw_help_modal(frame: &mut Frame) {
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
     )));
-    help_lines.push(Line::from("  h / Left   : Select column"));
-    help_lines.push(Line::from("  j / Down   : Sort / toggle type"));
-    help_lines.push(Line::from("  k / Up     : Sort / toggle type"));
-    help_lines.push(Line::from("  l / Right  : Select column"));
+    help_lines.push(Line::from("  h / Left   : Prev type / column"));
+    help_lines.push(Line::from("  j / Down   : Sort / prev type"));
+    help_lines.push(Line::from("  k / Up     : Sort / next type"));
+    help_lines.push(Line::from("  l / Right  : Next type / column"));
     help_lines.push(Line::from("  Enter      : Add/edit filter for column"));
     help_lines.push(Line::from("  Delete     : Remove existing filter"));
     help_lines.push(Line::from("  Esc        : Cancel and return"));

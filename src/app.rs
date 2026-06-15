@@ -8,7 +8,7 @@
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
-use crate::driver::{collect_active_filters, DbDriver, FilterOp};
+use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp};
 use crate::ui::helpers::cursor_line_col;
 
 /// A single related record fetched for a foreign key value.
@@ -63,6 +63,7 @@ pub struct App {
     pub sort_asc: bool,
     pub temp_filter_op: FilterOp,
     pub temp_filter_value: String,
+    pub column_types: Vec<ColumnType>,
     pub query_text: String,
     pub query_cursor: usize,
     pub query_edit_mode: bool,
@@ -123,6 +124,7 @@ impl App {
             highlighter,
             save_queries: false,
             all_rows: Vec::new(),
+            column_types: Vec::new(),
             working_dir,
         };
 
@@ -143,9 +145,11 @@ impl App {
         let table_name = &self.tables[index];
 
         let headers = self.driver.table_columns(table_name)?;
+        let column_types = self.driver.table_column_types(table_name)?;
 
         // Set headers and reset filter state before fetching
         self.headers = headers;
+        self.column_types = column_types;
         self.filters = vec![None; self.headers.len()];
         self.filter_mode = FilterMode::None;
         self.filter_col = 0;
@@ -500,6 +504,47 @@ impl App {
 
     // Filter mode methods
 
+    fn default_filter_op(&self, col: usize) -> FilterOp {
+        if col < self.column_types.len() && self.column_types[col] == ColumnType::String {
+            FilterOp::Contains
+        } else {
+            FilterOp::Equals
+        }
+    }
+
+    fn filter_ops_for_col(&self, col: usize) -> Vec<FilterOp> {
+        let col_type = self.column_types.get(col).cloned().unwrap_or(ColumnType::Other);
+        match col_type {
+            ColumnType::Number => vec![
+                FilterOp::Equals,
+                FilterOp::NotEquals,
+                FilterOp::Contains,
+                FilterOp::GreaterThan,
+                FilterOp::LessThan,
+                FilterOp::GreaterThanOrEquals,
+                FilterOp::LessThanOrEquals,
+            ],
+            _ => vec![
+                FilterOp::Contains,
+                FilterOp::Equals,
+                FilterOp::NotEquals,
+            ],
+        }
+    }
+
+    fn next_filter_op(&self, current: &FilterOp, col: usize) -> FilterOp {
+        let ops = self.filter_ops_for_col(col);
+        let pos = ops.iter().position(|op| op == current).unwrap_or(0);
+        ops[(pos + 1) % ops.len()].clone()
+    }
+
+    fn prev_filter_op(&self, current: &FilterOp, col: usize) -> FilterOp {
+        let ops = self.filter_ops_for_col(col);
+        let pos = ops.iter().position(|op| op == current).unwrap_or(0);
+        let prev = if pos == 0 { ops.len() - 1 } else { pos - 1 };
+        ops[prev].clone()
+    }
+
     pub fn toggle_filter_mode(&mut self) {
         if !self.table_focused {
             return;
@@ -565,7 +610,7 @@ impl App {
                 self.temp_filter_op = op.clone();
                 self.temp_filter_value = val.clone();
             } else {
-                self.temp_filter_op = FilterOp::Equals;
+                self.temp_filter_op = self.default_filter_op(self.filter_col);
                 self.temp_filter_value = String::new();
             }
             self.filter_mode = FilterMode::TypeSelect;
@@ -574,10 +619,13 @@ impl App {
 
     pub fn toggle_filter_type(&mut self) {
         if self.filter_mode == FilterMode::TypeSelect {
-            self.temp_filter_op = match self.temp_filter_op {
-                FilterOp::Equals => FilterOp::Contains,
-                FilterOp::Contains => FilterOp::Equals,
-            };
+            self.temp_filter_op = self.next_filter_op(&self.temp_filter_op, self.filter_col);
+        }
+    }
+
+    pub fn toggle_filter_type_back(&mut self) {
+        if self.filter_mode == FilterMode::TypeSelect {
+            self.temp_filter_op = self.prev_filter_op(&self.temp_filter_op, self.filter_col);
         }
     }
 
@@ -658,7 +706,32 @@ impl App {
                     let cell = &row[*i];
                     match op {
                         FilterOp::Equals => cell == *val,
+                        FilterOp::NotEquals => cell != *val,
                         FilterOp::Contains => cell.to_lowercase().contains(&val.to_lowercase()),
+                        FilterOp::GreaterThan => {
+                            match (cell.parse::<f64>(), val.parse::<f64>()) {
+                                (Ok(c), Ok(v)) => c > v,
+                                _ => cell > *val,
+                            }
+                        }
+                        FilterOp::LessThan => {
+                            match (cell.parse::<f64>(), val.parse::<f64>()) {
+                                (Ok(c), Ok(v)) => c < v,
+                                _ => cell < *val,
+                            }
+                        }
+                        FilterOp::GreaterThanOrEquals => {
+                            match (cell.parse::<f64>(), val.parse::<f64>()) {
+                                (Ok(c), Ok(v)) => c >= v,
+                                _ => cell >= *val,
+                            }
+                        }
+                        FilterOp::LessThanOrEquals => {
+                            match (cell.parse::<f64>(), val.parse::<f64>()) {
+                                (Ok(c), Ok(v)) => c <= v,
+                                _ => cell <= *val,
+                            }
+                        }
                     }
                 })
             });
@@ -762,6 +835,7 @@ impl App {
         // Clear filters/sort when query is re-run
         self.all_rows = self.rows.clone();
         self.filters = vec![None; self.headers.len()];
+        self.column_types = vec![ColumnType::String; self.headers.len()];
         self.filter_mode = FilterMode::None;
         self.filter_col = 0;
         self.sort_col = None;

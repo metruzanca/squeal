@@ -1,5 +1,12 @@
 use std::error::Error;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColumnType {
+    Number,
+    String,
+    Other,
+}
+
 /// Convert a SQLite value to a string representation.
 pub fn sqlite_value_to_string(value: &rusqlite::types::Value) -> String {
     match value {
@@ -25,7 +32,12 @@ pub fn collect_active_filters(
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterOp {
     Equals,
+    NotEquals,
     Contains,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEquals,
+    LessThanOrEquals,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +53,7 @@ pub struct ForeignKeyInfo {
 pub trait DbDriver {
     fn list_tables(&mut self) -> Result<Vec<String>, Box<dyn Error>>;
     fn table_columns(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>>;
+    fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>>;
     fn fetch_rows(
         &mut self,
         table_name: &str,

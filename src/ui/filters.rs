@@ -6,30 +6,60 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::driver::FilterOp;
+use crate::driver::{ColumnType, FilterOp};
+
+fn op_symbol(op: &FilterOp) -> &'static str {
+    match op {
+        FilterOp::Equals => "=",
+        FilterOp::NotEquals => "≠",
+        FilterOp::Contains => "~",
+        FilterOp::GreaterThan => ">",
+        FilterOp::LessThan => "<",
+        FilterOp::GreaterThanOrEquals => "≥",
+        FilterOp::LessThanOrEquals => "≤",
+    }
+}
+
+fn ops_for_type(col_type: &ColumnType) -> Vec<FilterOp> {
+    match col_type {
+        ColumnType::Number => vec![
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::Contains,
+            FilterOp::GreaterThan,
+            FilterOp::LessThan,
+            FilterOp::GreaterThanOrEquals,
+            FilterOp::LessThanOrEquals,
+        ],
+        _ => vec![
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::Contains,
+        ],
+    }
+}
 
 pub fn render_type_select(
     frame: &mut Frame,
     area: Rect,
     col_name: &str,
     temp_filter_op: &FilterOp,
+    col_type: &ColumnType,
 ) {
-    let eq_style = if *temp_filter_op == FilterOp::Equals {
-        Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let contains_style = if *temp_filter_op == FilterOp::Contains {
-        Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let type_line = Line::from(vec![
-        Span::raw(format!("Filter: {} | ", col_name)),
-        Span::styled("equals", eq_style),
-        Span::raw("  "),
-        Span::styled("contains", contains_style),
-    ]);
+    let ops = ops_for_type(col_type);
+    let mut spans: Vec<Span> = vec![Span::raw(format!("Filter: {} | ", col_name))];
+    for (i, op) in ops.iter().enumerate() {
+        let style = if *temp_filter_op == *op {
+            Style::default().fg(Color::White).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(op_symbol(op), style));
+        if i + 1 < ops.len() {
+            spans.push(Span::raw("  "));
+        }
+    }
+    let type_line = Line::from(spans);
     let type_paragraph = Paragraph::new(type_line);
     frame.render_widget(type_paragraph, area);
 }
@@ -45,10 +75,7 @@ pub fn render_filter_bar(
         .enumerate()
         .filter_map(|(i, f)| {
             f.as_ref().map(|(op, val)| {
-                let op_str = match op {
-                    FilterOp::Equals => "=",
-                    FilterOp::Contains => "~",
-                };
+                let op_str = op_symbol(op);
                 let content = format!("{}: {} {}", headers[i], op_str, val);
                 Line::from(Span::styled(content, Style::default().fg(Color::DarkGray)))
             })
@@ -65,10 +92,7 @@ pub fn render_value_input(
     temp_filter_op: &FilterOp,
     temp_filter_value: &str,
 ) {
-    let op_str = match temp_filter_op {
-        FilterOp::Equals => "=",
-        FilterOp::Contains => "~",
-    };
+    let op_str = op_symbol(temp_filter_op);
     let prefix = format!("Filter: {} {} ", col_name, op_str);
     let value_line = Line::from(vec![
         Span::raw(&prefix),

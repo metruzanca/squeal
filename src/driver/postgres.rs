@@ -2,7 +2,32 @@ use std::error::Error;
 
 use postgres::NoTls;
 
-use crate::driver::{collect_active_filters, DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo};
+
+fn postgres_type_to_column_type(type_name: &str) -> ColumnType {
+    let t = type_name.to_lowercase();
+    if t.contains("int")
+        || t.contains("serial")
+        || t.contains("float")
+        || t.contains("double")
+        || t.contains("real")
+        || t.contains("numeric")
+        || t.contains("decimal")
+        || t.contains("money")
+        || t.contains("oid")
+    {
+        ColumnType::Number
+    } else if t.contains("char")
+        || t.contains("text")
+        || t.contains("name")
+        || t.contains("bpchar")
+        || t.contains("varchar")
+    {
+        ColumnType::String
+    } else {
+        ColumnType::Other
+    }
+}
 
 pub struct PostgresDriver {
     pub client: postgres::Client,
@@ -128,6 +153,20 @@ impl DbDriver for PostgresDriver {
         Ok(columns)
     }
 
+    fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>> {
+        let rows = self.client.query(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = $1 AND table_schema = 'public' \
+             ORDER BY ordinal_position",
+            &[&table_name],
+        )?;
+        let types = rows
+            .iter()
+            .map(|row| postgres_type_to_column_type(&row.get::<_, String>(0)))
+            .collect();
+        Ok(types)
+    }
+
     fn fetch_rows(
         &mut self,
         table_name: &str,
@@ -153,9 +192,36 @@ impl DbDriver for PostgresDriver {
                     FilterOp::Equals => {
                         format!("CAST(\"{}\" AS TEXT) = ${}", col, param_idx)
                     }
+                    FilterOp::NotEquals => {
+                        format!("CAST(\"{}\" AS TEXT) != ${}", col, param_idx)
+                    }
                     FilterOp::Contains => {
                         format!(
                             "CAST(\"{}\" AS TEXT) ILIKE '%' || ${} || '%'",
+                            col, param_idx
+                        )
+                    }
+                    FilterOp::GreaterThan => {
+                        format!(
+                            "CAST(\"{}\" AS TEXT)::real > (${}::text)::real",
+                            col, param_idx
+                        )
+                    }
+                    FilterOp::LessThan => {
+                        format!(
+                            "CAST(\"{}\" AS TEXT)::real < (${}::text)::real",
+                            col, param_idx
+                        )
+                    }
+                    FilterOp::GreaterThanOrEquals => {
+                        format!(
+                            "CAST(\"{}\" AS TEXT)::real >= (${}::text)::real",
+                            col, param_idx
+                        )
+                    }
+                    FilterOp::LessThanOrEquals => {
+                        format!(
+                            "CAST(\"{}\" AS TEXT)::real <= (${}::text)::real",
                             col, param_idx
                         )
                     }

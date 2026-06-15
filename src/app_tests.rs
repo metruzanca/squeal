@@ -507,8 +507,9 @@ mod tests {
         app.enter_filter_for_col();
 
         assert_eq!(app.filter_mode, FilterMode::TypeSelect);
+        // id is a number column, default is Equals, toggle goes to NotEquals
         app.toggle_filter_type();
-        assert_eq!(app.temp_filter_op, FilterOp::Contains);
+        assert_eq!(app.temp_filter_op, FilterOp::NotEquals);
         app.move_to_value_input();
         assert_eq!(app.filter_mode, FilterMode::ValueInput);
 
@@ -536,8 +537,9 @@ mod tests {
 
         app.enter_filter_for_col();
         assert_eq!(app.filter_mode, FilterMode::TypeSelect);
+        // id is a number column, default is Equals, toggle goes to NotEquals
         app.toggle_filter_type();
-        assert_eq!(app.temp_filter_op, FilterOp::Contains);
+        assert_eq!(app.temp_filter_op, FilterOp::NotEquals);
         app.move_to_value_input();
         assert_eq!(app.filter_mode, FilterMode::ValueInput);
 
@@ -554,7 +556,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('W');
         app.apply_filter();
@@ -618,7 +620,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('e');
         app.apply_filter();
@@ -646,7 +648,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('w');
         app.apply_filter();
@@ -686,7 +688,9 @@ mod tests {
         app.move_filter_col_right();
         app.move_filter_col_right(); // price column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // price is a number column, default is Equals, toggle twice to get Contains
+        app.toggle_filter_type();
+        app.toggle_filter_type();
         app.move_to_value_input();
         app.filter_input_char('9');
         app.apply_filter();
@@ -704,7 +708,8 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
         app.enter_filter_for_col();
-        // Equals is default
+        // title is a string column, default is Contains, toggle once to Equals
+        app.toggle_filter_type();
         app.move_to_value_input();
         app.filter_input_char('W');
         app.filter_input_char('i');
@@ -727,7 +732,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('W');
         app.apply_filter();
@@ -747,7 +752,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('W');
         app.apply_filter();
@@ -774,7 +779,7 @@ mod tests {
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
         app.enter_filter_for_col();
-        app.toggle_filter_type(); // switch to Contains
+        // title is a string column, default is Contains
         app.move_to_value_input();
         app.filter_input_char('W');
         app.apply_filter();

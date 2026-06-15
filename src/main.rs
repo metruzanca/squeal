@@ -200,9 +200,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                         }
                         FilterMode::TypeSelect => {
                             match key.code {
-                                KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type(),
+                                KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type_back(),
                                 KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
-                                KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type(),
+                                KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type_back(),
                                 KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
                                 KeyCode::Enter => app.move_to_value_input(),
                                 KeyCode::Esc => app.cancel_filter_mode(),

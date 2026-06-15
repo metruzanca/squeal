@@ -7,7 +7,7 @@ mod tests {
     use testcontainers::ImageExt;
     use testcontainers::GenericImage;
 
-    use crate::driver::{DbDriver, FilterOp};
+    use crate::driver::{ColumnType, DbDriver, FilterOp};
     use crate::driver::postgres::PostgresDriver;
 
     fn wait_for_postgres(port: u16) -> Result<(), Box<dyn Error>> {
@@ -120,6 +120,19 @@ mod tests {
     }
 
     #[test]
+    fn test_table_column_types() {
+        let (url, _container) = start_postgres().unwrap();
+        let mut driver = PostgresDriver::new(&url).unwrap();
+        setup_schema(&mut driver).unwrap();
+
+        let types = driver.table_column_types("users").unwrap();
+        assert_eq!(types, vec![ColumnType::Number, ColumnType::String, ColumnType::String]);
+
+        let types = driver.table_column_types("products").unwrap();
+        assert_eq!(types, vec![ColumnType::Number, ColumnType::String, ColumnType::Number]);
+    }
+
+    #[test]
     fn test_fetch_rows() {
         let (url, _container) = start_postgres().unwrap();
         let mut driver = PostgresDriver::new(&url).unwrap();
@@ -144,6 +157,33 @@ mod tests {
         let rows = driver.fetch_rows("users", &headers, &filters, None, true, 0, 100).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], vec!["1", "Alice", "alice@example.com"]);
+    }
+
+    #[test]
+    fn test_fetch_rows_with_not_equals_filter() {
+        let (url, _container) = start_postgres().unwrap();
+        let mut driver = PostgresDriver::new(&url).unwrap();
+        setup_schema(&mut driver).unwrap();
+
+        let headers = vec!["id".to_string(), "name".to_string(), "email".to_string()];
+        let filters = vec![None, Some((FilterOp::NotEquals, "Alice".to_string())), None];
+        let rows = driver.fetch_rows("users", &headers, &filters, None, true, 0, 100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec!["2", "Bob", "bob@example.com"]);
+        assert_eq!(rows[1], vec!["3", "Charlie", ""]);
+    }
+
+    #[test]
+    fn test_fetch_rows_with_greater_than_filter() {
+        let (url, _container) = start_postgres().unwrap();
+        let mut driver = PostgresDriver::new(&url).unwrap();
+        setup_schema(&mut driver).unwrap();
+
+        let headers = vec!["id".to_string(), "title".to_string(), "price".to_string()];
+        let filters = vec![Some((FilterOp::GreaterThan, "1".to_string())), None, None];
+        let rows = driver.fetch_rows("products", &headers, &filters, None, true, 0, 100).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], vec!["2", "Gadget", "19.99"]);
     }
 
     #[test]

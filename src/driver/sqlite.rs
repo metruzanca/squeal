@@ -2,7 +2,24 @@ use std::error::Error;
 
 use rusqlite::{Connection, Result as SqliteResult};
 
-use crate::driver::{collect_active_filters, sqlite_value_to_string, DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, sqlite_value_to_string, ColumnType, DbDriver, FilterOp, ForeignKeyInfo};
+
+fn sqlite_type_to_column_type(type_name: &str) -> ColumnType {
+    let t = type_name.to_lowercase();
+    if t.contains("int")
+        || t.contains("real")
+        || t.contains("float")
+        || t.contains("double")
+        || t.contains("num")
+        || t.contains("dec")
+    {
+        ColumnType::Number
+    } else if t.contains("char") || t.contains("text") || t.contains("clob") || t.contains("string") {
+        ColumnType::String
+    } else {
+        ColumnType::Other
+    }
+}
 
 pub struct SQLiteDriver {
     conn: Connection,
@@ -40,6 +57,19 @@ impl DbDriver for SQLiteDriver {
         Ok(columns)
     }
 
+    fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
+        let types = stmt
+            .query_map([], |row| {
+                let type_name: String = row.get(2)?;
+                Ok(sqlite_type_to_column_type(&type_name))
+            })?
+            .collect::<SqliteResult<Vec<ColumnType>>>()?;
+        Ok(types)
+    }
+
     fn fetch_rows(
         &mut self,
         table_name: &str,
@@ -61,11 +91,26 @@ impl DbDriver for SQLiteDriver {
                     FilterOp::Equals => {
                         format!("CAST(\"{}\" AS TEXT) = ?", headers[*i])
                     }
+                    FilterOp::NotEquals => {
+                        format!("CAST(\"{}\" AS TEXT) != ?", headers[*i])
+                    }
                     FilterOp::Contains => {
                         format!(
                             "LOWER(CAST(\"{}\" AS TEXT)) LIKE LOWER('%' || ? || '%')",
                             headers[*i]
                         )
+                    }
+                    FilterOp::GreaterThan => {
+                        format!("CAST(\"{}\" AS REAL) > ?", headers[*i])
+                    }
+                    FilterOp::LessThan => {
+                        format!("CAST(\"{}\" AS REAL) < ?", headers[*i])
+                    }
+                    FilterOp::GreaterThanOrEquals => {
+                        format!("CAST(\"{}\" AS REAL) >= ?", headers[*i])
+                    }
+                    FilterOp::LessThanOrEquals => {
+                        format!("CAST(\"{}\" AS REAL) <= ?", headers[*i])
                     }
                 };
                 where_clauses.push(clause);
