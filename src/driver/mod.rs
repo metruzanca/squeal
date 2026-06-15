@@ -66,3 +66,6 @@ pub mod postgres;
 
 #[cfg(test)]
 pub mod postgres_tests;
+
+#[cfg(test)]
+pub mod sqlite_tests;
