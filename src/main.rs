@@ -18,7 +18,9 @@ use ratatui::{
 use clap::Parser;
 
 mod app;
+mod config;
 mod driver;
+mod startup;
 mod ui;
 
 mod test_db;
@@ -27,7 +29,9 @@ mod test_db;
 mod app_tests;
 
 use app::{App, FilterMode};
+use config::Config;
 use driver::{sqlite::SQLiteDriver, postgres::PostgresDriver};
+use startup::run_startup;
 use ui::draw;
 
 #[derive(Parser)]
@@ -46,60 +50,85 @@ struct Cli {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let mut app = build_app(&cli);
-
     let mut terminal = setup_terminal()?;
-    let result = run(&mut terminal, &mut app);
+    let result = run_with_terminal(&mut terminal, &cli);
     restore_terminal(&mut terminal)?;
     result
 }
 
-fn build_app(cli: &Cli) -> App {
+fn run_with_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>, cli: &Cli) -> io::Result<()> {
     if cli.demo && cli.path.is_some() {
         eprintln!("Error: cannot use --demo with a database path");
         std::process::exit(1);
     }
 
     if cli.demo {
-        let conn = test_db::TestDb::in_memory_demo();
-        let driver = SQLiteDriver::from_connection(conn);
-        match App::new(Box::new(driver)) {
+        let mut app = build_demo_app();
+        run(terminal, &mut app)
+    } else if let Some(path) = cli.path.as_deref() {
+        let mut app = match build_app_from_path(path) {
             Ok(app) => app,
             Err(e) => {
-                eprintln!("Error creating demo database: {}", e);
+                eprintln!("{}", e);
                 std::process::exit(1);
-            }
-        }
-    } else if let Some(path) = cli.path.as_deref() {
-        let driver: Box<dyn driver::DbDriver> = if path.starts_with("postgres://") || path.starts_with("postgresql://") {
-            match PostgresDriver::new(path) {
-                Ok(driver) => Box::new(driver),
-                Err(e) => {
-                    eprintln!("Error connecting to PostgreSQL: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            match SQLiteDriver::new(path) {
-                Ok(driver) => Box::new(driver),
-                Err(e) => {
-                    eprintln!("Error opening SQLite database: {}", e);
-                    std::process::exit(1);
-                }
             }
         };
-        match App::new(driver) {
-            Ok(app) => app,
-            Err(e) => {
-                eprintln!("Error opening database: {}", e);
-                std::process::exit(1);
-            }
-        }
+        save_recent(path);
+        run(terminal, &mut app)
     } else {
-        eprintln!("Usage: squeal <database> or squeal --demo");
-        eprintln!("  SQLite:   squeal my-database.db");
-        eprintln!("  Postgres: squeal postgres://user:pass@host/db");
-        std::process::exit(1);
+        // No arguments: show startup screen
+        match run_startup(terminal)? {
+            Some(path) => {
+                let mut app = match build_app_from_path(&path) {
+                    Ok(app) => app,
+                    Err(e) => {
+                        restore_terminal(terminal)?;
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
+                };
+                run(terminal, &mut app)
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+fn build_demo_app() -> App {
+    let conn = test_db::TestDb::in_memory_demo();
+    let driver = SQLiteDriver::from_connection(conn);
+    match App::new(Box::new(driver)) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Error creating demo database: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn build_app_from_path(path: &str) -> Result<App, String> {
+    let driver: Box<dyn driver::DbDriver> = if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+        PostgresDriver::new(path)
+            .map(|d| Box::new(d) as Box<dyn driver::DbDriver>)
+            .map_err(|e| format!("Error connecting to PostgreSQL: {}", e))?
+    } else {
+        SQLiteDriver::new(path)
+            .map(|d| Box::new(d) as Box<dyn driver::DbDriver>)
+            .map_err(|e| format!("Error opening SQLite database: {}", e))?
+    };
+
+    App::new(driver).map_err(|e| format!("Error opening database: {}", e))
+}
+
+fn save_recent(path: &str) {
+    let conn_type = if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+        "postgres"
+    } else {
+        "sqlite"
+    };
+    if let Ok(mut cfg) = Config::load() {
+        cfg.add_recent(path, conn_type);
+        let _ = cfg.save();
     }
 }
 
