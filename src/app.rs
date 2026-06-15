@@ -8,7 +8,7 @@
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
-use crate::driver::{DbDriver, FilterOp};
+use crate::driver::{collect_active_filters, DbDriver, FilterOp};
 use crate::ui::helpers::cursor_line_col;
 
 /// A single related record fetched for a foreign key value.
@@ -650,12 +650,7 @@ impl App {
 
         let mut rows = self.all_rows.clone();
 
-        let active_filters: Vec<(usize, &FilterOp, &String)> = self
-            .filters
-            .iter()
-            .enumerate()
-            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
-            .collect();
+        let active_filters = collect_active_filters(&self.filters);
 
         if !active_filters.is_empty() {
             rows.retain(|row| {

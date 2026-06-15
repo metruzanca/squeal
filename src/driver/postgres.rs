@@ -2,7 +2,7 @@ use std::error::Error;
 
 use postgres::NoTls;
 
-use crate::driver::{DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, DbDriver, FilterOp, ForeignKeyInfo};
 
 pub struct PostgresDriver {
     pub client: postgres::Client,
@@ -140,11 +140,7 @@ impl DbDriver for PostgresDriver {
     ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
         let mut sql = format!("SELECT * FROM \"{}\"", escape_ident(table_name));
 
-        let active_filters: Vec<(usize, &FilterOp, &String)> = filters
-            .iter()
-            .enumerate()
-            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
-            .collect();
+        let active_filters = collect_active_filters(filters);
 
         let mut params: Vec<String> = Vec::new();
 

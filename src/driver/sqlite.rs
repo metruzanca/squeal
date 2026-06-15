@@ -2,7 +2,7 @@ use std::error::Error;
 
 use rusqlite::{Connection, Result as SqliteResult};
 
-use crate::driver::{DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, sqlite_value_to_string, DbDriver, FilterOp, ForeignKeyInfo};
 
 pub struct SQLiteDriver {
     conn: Connection,
@@ -52,11 +52,7 @@ impl DbDriver for SQLiteDriver {
     ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
         let mut sql = format!("SELECT * FROM \"{}\"", table_name);
 
-        let active_filters: Vec<(usize, &FilterOp, &String)> = filters
-            .iter()
-            .enumerate()
-            .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
-            .collect();
+        let active_filters = collect_active_filters(filters);
 
         if !active_filters.is_empty() {
             let mut where_clauses = Vec::new();
@@ -96,15 +92,7 @@ impl DbDriver for SQLiteDriver {
             .query_map(&params[..], |row| {
                 let mut values = Vec::with_capacity(col_count);
                 for i in 0..col_count {
-                    let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => String::new(),
-                        rusqlite::types::Value::Integer(v) => v.to_string(),
-                        rusqlite::types::Value::Real(v) => v.to_string(),
-                        rusqlite::types::Value::Text(v) => v,
-                        rusqlite::types::Value::Blob(v) => {
-                            String::from_utf8_lossy(&v).to_string()
-                        }
-                    };
+                    let value = sqlite_value_to_string(&row.get::<_, rusqlite::types::Value>(i)?);
                     values.push(value);
                 }
                 Ok(values)
@@ -123,15 +111,7 @@ impl DbDriver for SQLiteDriver {
                 match stmt.query_map([], |row| {
                     let mut values = Vec::with_capacity(col_count);
                     for i in 0..col_count {
-                        let value = match row.get::<_, rusqlite::types::Value>(i)? {
-                            rusqlite::types::Value::Null => String::new(),
-                            rusqlite::types::Value::Integer(v) => v.to_string(),
-                            rusqlite::types::Value::Real(v) => v.to_string(),
-                            rusqlite::types::Value::Text(v) => v,
-                            rusqlite::types::Value::Blob(v) => {
-                                String::from_utf8_lossy(&v).to_string()
-                            }
-                        };
+                        let value = sqlite_value_to_string(&row.get::<_, rusqlite::types::Value>(i)?);
                         values.push(value);
                     }
                     Ok(values)
@@ -189,15 +169,7 @@ impl DbDriver for SQLiteDriver {
         let mut rows = stmt.query_map([fk_value.to_string()], |r| {
             let mut values = Vec::with_capacity(col_count);
             for i in 0..col_count {
-                let value = match r.get::<_, rusqlite::types::Value>(i)? {
-                    rusqlite::types::Value::Null => String::new(),
-                    rusqlite::types::Value::Integer(v) => v.to_string(),
-                    rusqlite::types::Value::Real(v) => v.to_string(),
-                    rusqlite::types::Value::Text(v) => v,
-                    rusqlite::types::Value::Blob(v) => {
-                        String::from_utf8_lossy(&v).to_string()
-                    }
-                };
+                let value = sqlite_value_to_string(&r.get::<_, rusqlite::types::Value>(i)?);
                 values.push(value);
             }
             Ok(values)

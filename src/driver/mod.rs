@@ -1,5 +1,27 @@
 use std::error::Error;
 
+/// Convert a SQLite value to a string representation.
+pub fn sqlite_value_to_string(value: &rusqlite::types::Value) -> String {
+    match value {
+        rusqlite::types::Value::Null => String::new(),
+        rusqlite::types::Value::Integer(v) => v.to_string(),
+        rusqlite::types::Value::Real(v) => v.to_string(),
+        rusqlite::types::Value::Text(v) => v.clone(),
+        rusqlite::types::Value::Blob(v) => String::from_utf8_lossy(v).to_string(),
+    }
+}
+
+/// Collect active filters from the filters slice into a vector of (column_index, op, value).
+pub fn collect_active_filters(
+    filters: &[Option<(FilterOp, String)>],
+) -> Vec<(usize, &FilterOp, &String)> {
+    filters
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.as_ref().map(|(op, val)| (i, op, val)))
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterOp {
     Equals,
