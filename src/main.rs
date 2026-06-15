@@ -5,6 +5,7 @@
 //! keyboard events to application commands (table selection, focus/unfocus, scrolling, and quit).
 
 use std::io::{self, stdout, Stdout};
+use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -147,11 +148,25 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
+const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+fn should_auto_refresh(app: &App) -> bool {
+    !app.help_open
+        && !app.modal_open
+        && app.table_focused
+        && app.filter_mode == app::FilterMode::None
+        && !app.is_query_view
+        && !app.headers.is_empty()
+        && !app.query_edit_mode
+        && !app.rename_mode
+}
+
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| draw(frame, app))?;
 
-        if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
+        if event::poll(REFRESH_INTERVAL)? {
+            if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
             if key.code == KeyCode::Char('q') {
                 break;
             } else if app.help_open {
@@ -284,6 +299,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                         KeyCode::PageDown => app.page_down(),
                         KeyCode::PageUp => app.page_up(),
                         KeyCode::Enter => { let _ = app.open_modal(); }
+                        KeyCode::Char('r') => { let _ = app.refresh_current_table(); }
                         _ => {}
                     }
                 }
@@ -301,6 +317,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     _ => {}
                 }
             }
+            }  // end inner Event::Key match
+        } else if should_auto_refresh(app) {
+            let _ = app.refresh_current_table();
         }
     }
     Ok(())

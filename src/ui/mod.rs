@@ -466,6 +466,8 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  Tab        : Back to sidebar"));
     help_lines.push(Line::from("  Enter      : Open Details"));
     help_lines.push(Line::from("  /          : Filter mode"));
+    help_lines.push(Line::from("  r          : Refresh data"));
+    help_lines.push(Line::from("  Auto       : Refreshes every 5 sec"));
     help_lines.push(Line::from(""));
     help_lines.push(Line::from(Span::styled(
         "Query View",
@@ -710,7 +712,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                 Span::raw("Enter"),
                 Span::styled(": Details   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("/"),
-                Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
+                Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
+                Span::raw("r"),
+                Span::styled(": Refresh", Style::default().fg(Color::DarkGray)),
             ]
         }
     } else {

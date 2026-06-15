@@ -660,6 +660,31 @@ impl App {
         }
     }
 
+    pub fn refresh_current_table(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.tables.is_empty() || self.is_query_view || self.headers.is_empty() {
+            return Ok(());
+        }
+        let table_name = &self.tables[self.selected_sidebar];
+        let fetch_count = self.rows.len().max(100);
+        let new_rows = self.driver.fetch_rows(
+            table_name,
+            &self.headers,
+            &self.filters,
+            self.sort_col,
+            self.sort_asc,
+            0,
+            fetch_count,
+        )?;
+        self.has_more_rows = new_rows.len() == fetch_count;
+        self.rows = new_rows;
+        if let Some(selected) = self.table_state.selected() {
+            if selected >= self.rows.len() && !self.rows.is_empty() {
+                self.table_state.select(Some(self.rows.len() - 1));
+            }
+        }
+        Ok(())
+    }
+
     pub fn apply_filters_and_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_query_view {
             return self.apply_query_filters_and_sort();
