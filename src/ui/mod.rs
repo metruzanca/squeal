@@ -12,6 +12,9 @@ pub mod filters;
 pub mod helpers;
 pub mod table;
 
+#[cfg(test)]
+pub mod table_tests;
+
 use filters::{render_filter_bar, render_type_select, render_value_input};
 use helpers::{centered_rect, cursor_line_col};
 use table::{

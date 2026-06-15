@@ -23,6 +23,9 @@ mod ui;
 
 mod test_db;
 
+#[cfg(test)]
+mod app_tests;
+
 use app::{App, FilterMode};
 use driver::{sqlite::SQLiteDriver, postgres::PostgresDriver};
 use ui::draw;
