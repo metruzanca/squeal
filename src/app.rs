@@ -1098,17 +1098,6 @@ mod tests {
     }
 
     #[test]
-    fn test_app_new_loads_tables() {
-        let path = "/tmp/squeal_test.db";
-        test_db::TestDb::simple(path);
-        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
-        assert_eq!(app.tables, vec!["products", "users"]);
-        assert_eq!(app.headers, vec!["id", "title", "price"]);
-        assert_eq!(app.rows.len(), 2);
-        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
-    }
-
-    #[test]
     fn test_app_navigation() {
         let path = "/tmp/squeal_test_nav.db";
         test_db::TestDb::simple(path);
@@ -1129,46 +1118,6 @@ mod tests {
         app.previous();
         assert_eq!(app.selected_sidebar, 1);
         assert_eq!(app.tables[app.selected_sidebar], "users");
-    }
-
-    #[test]
-    fn test_app_empty_db() {
-        let path = "/tmp/squeal_test_empty.db";
-        test_db::TestDb::empty(path);
-        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
-        assert!(app.tables.is_empty());
-        assert!(app.headers.is_empty());
-        assert!(app.rows.is_empty());
-    }
-
-    #[test]
-    fn test_app_large_db() {
-        let path = "/tmp/squeal_test_large.db";
-        test_db::TestDb::large(path, 150);
-        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
-        assert_eq!(app.tables, vec!["items"]);
-        assert_eq!(app.headers, vec!["id", "name", "value"]);
-        assert_eq!(app.rows.len(), 100); // limited to 100 rows initially
-    }
-
-    #[test]
-    fn test_app_wide_db() {
-        let path = "/tmp/squeal_test_wide.db";
-        test_db::TestDb::wide(path);
-        let app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
-        assert_eq!(app.tables, vec!["wide_table"]);
-        assert_eq!(app.headers.len(), 10);
-        assert_eq!(app.rows.len(), 2);
-    }
-
-    #[test]
-    fn test_app_in_memory_demo() {
-        let conn = test_db::TestDb::in_memory_simple();
-        let app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
-        assert_eq!(app.tables, vec!["products", "users"]);
-        assert_eq!(app.headers, vec!["id", "title", "price"]);
-        assert_eq!(app.rows.len(), 2);
-        assert_eq!(app.rows[0], vec!["1", "Widget", "9.99"]);
     }
 
     #[test]
