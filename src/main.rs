@@ -153,7 +153,6 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 fn should_auto_refresh(app: &App) -> bool {
     !app.help_open
         && !app.modal_open
-        && app.table_focused
         && app.filter_mode == app::FilterMode::None
         && !app.is_query_view
         && !app.headers.is_empty()
