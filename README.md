@@ -1,44 +1,51 @@
 # squeal
 
-A lightweight TUI SQLite database viewer built in Rust.
+A lightweight TUI database viewer for SQLite and PostgreSQL, built in Rust.
 
-`squeal` lets you open any SQLite database file and browse its tables directly in the terminal. It features a split-pane interface: a table list on the left and the selected table's data on the right. Navigation is vim-inspired, and large tables are lazily loaded so you can inspect databases of any size without freezing your terminal.
+`squeal` lets you open any SQLite or PostgreSQL database and browse its tables directly in the terminal. It features a split-pane interface. Navigation is intuitive and easy, and large tables are lazily loaded.
 
 [![asciinema](.github/squeal-preview.png)](https://asciinema.org/a/Th7yS2UE30KD1IOc)
 
 ## Features
 
-- **Browse any SQLite database** — open `.db` or `.sqlite` files instantly
+- **SQLite & PostgreSQL** — auto-detects connection type from the URL
+- **Recent databases** — startup screen with recently opened databases
 - **Split-pane layout** — table list on the left, data on the right
-- **Vim-style navigation** — Supports vim movement natively, as well as arrow keys.
+- **Vim-style navigation** — supports vim movement keys natively, as well as arrow keys
 - **Lazy row loading** — loads 100 rows at a time, fetches more on demand as you scroll
-- **Column filtering** — filter by exact match or substring contains per column
+- **Column filtering** — type-aware operators: exact match, substring, numeric comparisons
 - **Column sorting** — sort any column ascending or descending
 - **Foreign key record view** — press `Enter` on a row to view related records from referenced tables
+- **Custom queries** — write, save, and browse ad-hoc SQL queries
+- **Auto-refresh** — table data refreshes every 5 seconds (manual refresh with `r`)
 - **Help overlay** — press `?` anytime to see all available keybindings
 
 ## Installation
 
 ```bash
-# Install Binary directly via github
-cargo binstall --git https://github.com/metruzanca/squeal --target squeal
-# Install from github via local build
+# Install via cargo binstall (picks up prebuilt binaries from GitHub releases)
+cargo binstall squeal
+# Install from source via GitHub
 cargo install --git https://github.com/metruzanca/squeal
+# Oneliner for servers
+curl -sL https://github.com/metruzanca/squeal/releases/latest/download/squeal-x86_64-unknown-linux-musl.tar.gz | tar -xz && ./squeal
 ```
 
 ## Usage
 
-Open a database file:
+Open a database:
 
 ```bash
-squeal my-database.db
-squeal --demo # to preview with dummy data
+squeal my-database.db                # SQLite
+squeal postgres://user:pass@host/db  # PostgreSQL
+squeal --demo                        # preview with dummy data
 ```
 
 ## Tech Stack
 
 - [ratatui](https://github.com/ratatui/ratatui) — terminal UI framework
 - [rusqlite](https://github.com/rusqlite/rusqlite) — SQLite bindings for Rust
+- [postgres](https://github.com/sfackler/rust-postgres) — PostgreSQL client for Rust
 - [crossterm](https://github.com/crossterm-rs/crossterm) — cross-platform terminal input
 - [clap](https://github.com/clap-rs/clap) — CLI argument parsing
 
