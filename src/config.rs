@@ -2,6 +2,22 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub fn absolutize_path(path: &str) -> String {
+    if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+        return path.to_string();
+    }
+    let p = std::path::Path::new(path);
+    if let Ok(canonical) = p.canonicalize() {
+        return canonical.to_string_lossy().to_string();
+    }
+    if p.is_relative() {
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(p).to_string_lossy().to_string();
+        }
+    }
+    path.to_string()
+}
+
 const MAX_RECENT: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,11 +64,12 @@ impl Config {
     }
 
     pub fn add_recent(&mut self, path: &str, connection_type: &str) {
+        let path = absolutize_path(path);
         // Remove existing entry with same path if present
         self.recent.retain(|e| e.path != path);
 
         let entry = RecentEntry {
-            path: path.to_string(),
+            path,
             connection_type: connection_type.to_string(),
             last_opened: chrono::Local::now().to_rfc3339(),
         };

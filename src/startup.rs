@@ -255,7 +255,7 @@ pub fn run_startup(
                 KeyCode::Enter => {
                     if let Some(entry) = screen.entries.get(screen.selected) {
                         let path = entry.path.clone();
-                        config.add_recent(&path, &entry.connection_type);
+                        config.add_recent(&entry.path, &entry.connection_type);
                         let _ = config.save();
                         return Ok(Some(path));
                     }
