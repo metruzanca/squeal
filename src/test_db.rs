@@ -1,7 +1,6 @@
 use std::fs;
 use rusqlite::Connection;
 
-#[allow(dead_code)]
 pub struct TestDb;
 
 #[allow(dead_code)]
