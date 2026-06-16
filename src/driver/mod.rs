@@ -1,6 +1,12 @@
 use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TableInfo {
+    pub schema: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ColumnType {
     Number,
     String,
@@ -51,7 +57,7 @@ pub struct ForeignKeyInfo {
 }
 
 pub trait DbDriver {
-    fn list_tables(&mut self) -> Result<Vec<String>, Box<dyn Error>>;
+    fn list_tables(&mut self) -> Result<Vec<TableInfo>, Box<dyn Error>>;
     fn table_columns(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>>;
     fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>>;
     fn fetch_rows(

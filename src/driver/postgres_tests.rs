@@ -105,8 +105,8 @@ mod tests {
         setup_schema(&mut driver).unwrap();
 
         let tables = driver.list_tables().unwrap();
-        assert!(tables.contains(&"users".to_string()));
-        assert!(tables.contains(&"products".to_string()));
+        assert!(tables.iter().any(|t| t.name == "users"));
+        assert!(tables.iter().any(|t| t.name == "products"));
     }
 
     #[test]
@@ -115,7 +115,7 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_schema(&mut driver).unwrap();
 
-        let cols = driver.table_columns("users").unwrap();
+        let cols = driver.table_columns("public.users").unwrap();
         assert_eq!(cols, vec!["id", "name", "email"]);
     }
 
@@ -125,10 +125,10 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_schema(&mut driver).unwrap();
 
-        let types = driver.table_column_types("users").unwrap();
+        let types = driver.table_column_types("public.users").unwrap();
         assert_eq!(types, vec![ColumnType::Number, ColumnType::String, ColumnType::String]);
 
-        let types = driver.table_column_types("products").unwrap();
+        let types = driver.table_column_types("public.products").unwrap();
         assert_eq!(types, vec![ColumnType::Number, ColumnType::String, ColumnType::Number]);
     }
 
@@ -139,7 +139,7 @@ mod tests {
         setup_schema(&mut driver).unwrap();
 
         let headers = vec!["id".to_string(), "name".to_string(), "email".to_string()];
-        let rows = driver.fetch_rows("users", &headers, &[None, None, None], None, true, 0, 100).unwrap();
+        let rows = driver.fetch_rows("public.users", &headers, &[None, None, None], None, true, 0, 100).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0], vec!["1", "Alice", "alice@example.com"]);
         assert_eq!(rows[1], vec!["2", "Bob", "bob@example.com"]);
@@ -154,7 +154,7 @@ mod tests {
 
         let headers = vec!["id".to_string(), "name".to_string(), "email".to_string()];
         let filters = vec![None, Some((FilterOp::Equals, "Alice".to_string())), None];
-        let rows = driver.fetch_rows("users", &headers, &filters, None, true, 0, 100).unwrap();
+        let rows = driver.fetch_rows("public.users", &headers, &filters, None, true, 0, 100).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], vec!["1", "Alice", "alice@example.com"]);
     }
@@ -167,7 +167,7 @@ mod tests {
 
         let headers = vec!["id".to_string(), "name".to_string(), "email".to_string()];
         let filters = vec![None, Some((FilterOp::NotEquals, "Alice".to_string())), None];
-        let rows = driver.fetch_rows("users", &headers, &filters, None, true, 0, 100).unwrap();
+        let rows = driver.fetch_rows("public.users", &headers, &filters, None, true, 0, 100).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], vec!["2", "Bob", "bob@example.com"]);
         assert_eq!(rows[1], vec!["3", "Charlie", ""]);
@@ -181,7 +181,7 @@ mod tests {
 
         let headers = vec!["id".to_string(), "title".to_string(), "price".to_string()];
         let filters = vec![Some((FilterOp::GreaterThan, "1".to_string())), None, None];
-        let rows = driver.fetch_rows("products", &headers, &filters, None, true, 0, 100).unwrap();
+        let rows = driver.fetch_rows("public.products", &headers, &filters, None, true, 0, 100).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], vec!["2", "Gadget", "19.99"]);
     }
@@ -193,7 +193,7 @@ mod tests {
         setup_schema(&mut driver).unwrap();
 
         let headers = vec!["id".to_string(), "name".to_string(), "email".to_string()];
-        let rows = driver.fetch_rows("users", &headers, &[None, None, None], Some(1), false, 0, 100).unwrap();
+        let rows = driver.fetch_rows("public.users", &headers, &[None, None, None], Some(1), false, 0, 100).unwrap();
         // Sorted by name descending: Charlie, Bob, Alice
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0], vec!["3", "Charlie", ""]);
@@ -231,10 +231,10 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_fk_schema(&mut driver).unwrap();
 
-        let fks = driver.get_foreign_keys("items").unwrap();
+        let fks = driver.get_foreign_keys("public.items").unwrap();
         assert_eq!(fks.len(), 1);
         assert_eq!(fks[0].from, "category_id");
-        assert_eq!(fks[0].table, "categories");
+        assert_eq!(fks[0].table, "public.categories");
         assert_eq!(fks[0].to, "id");
     }
 
@@ -244,7 +244,7 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_fk_schema(&mut driver).unwrap();
 
-        let fks = driver.get_foreign_keys("categories").unwrap();
+        let fks = driver.get_foreign_keys("public.categories").unwrap();
         assert!(fks.is_empty());
     }
 
@@ -254,7 +254,7 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_fk_schema(&mut driver).unwrap();
 
-        let (headers, row) = driver.fetch_related_record("categories", "id", "1").unwrap().unwrap();
+        let (headers, row) = driver.fetch_related_record("public.categories", "id", "1").unwrap().unwrap();
         assert_eq!(headers, vec!["id", "name"]);
         assert_eq!(row, vec!["1", "Electronics"]);
     }
@@ -265,7 +265,7 @@ mod tests {
         let mut driver = PostgresDriver::new(&url).unwrap();
         setup_fk_schema(&mut driver).unwrap();
 
-        let result = driver.fetch_related_record("categories", "id", "999").unwrap();
+        let result = driver.fetch_related_record("public.categories", "id", "999").unwrap();
         assert!(result.is_none());
     }
 
@@ -287,7 +287,7 @@ mod tests {
             "INSERT INTO refs (doc_id) VALUES ('550e8400-e29b-41d4-a716-446655440000')",
         ).unwrap();
 
-        let (headers, row) = driver.fetch_related_record("docs", "id", "550e8400-e29b-41d4-a716-446655440000").unwrap().unwrap();
+        let (headers, row) = driver.fetch_related_record("public.docs", "id", "550e8400-e29b-41d4-a716-446655440000").unwrap().unwrap();
         assert_eq!(headers, vec!["id", "name"]);
         assert_eq!(row, vec!["550e8400-e29b-41d4-a716-446655440000", "test"]);
     }

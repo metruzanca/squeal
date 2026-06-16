@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, FilterMode};
+use crate::app::{App, FilterMode, SidebarEntry};
 
 pub mod filters;
 pub mod helpers;
@@ -28,10 +28,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Fill(1), Constraint::Length(1)])
         .split(frame.area());
 
+    let has_group_headers = matches!(app.sidebar_entries.first(), Some(SidebarEntry::GroupHeader(_)));
+
     let max_table_name_len = app
         .tables
         .iter()
-        .map(|t| t.chars().count() as u16)
+        .map(|t| {
+            let pad = if has_group_headers { 2 } else { 0 };
+            t.name.chars().count() as u16 + pad
+        })
+        .max()
+        .unwrap_or(0);
+    let max_group_name_len = app
+        .groups
+        .iter()
+        .map(|g| g.name.chars().count() as u16 + 1) // +1 for ▶/▼
         .max()
         .unwrap_or(0);
     let max_query_name_len = app
@@ -40,17 +51,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .map(|q| q.name.chars().count() as u16)
         .max()
         .unwrap_or(0);
-    let left_width = (max_table_name_len.max(max_query_name_len) + 3).max(8);
+    let left_width = (max_table_name_len
+        .max(max_group_name_len)
+        .max(max_query_name_len)
+        + 3)
+        .max(8);
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Fill(1)])
         .split(outer_layout[0]);
 
-    // Left column: unified sidebar
+    // Left column: unified sidebar with groups
     let mut items: Vec<ListItem> = Vec::new();
-    for (i, name) in app.tables.iter().enumerate() {
-        let style = if i == app.selected_sidebar {
+    for (i, entry) in app.sidebar_entries.iter().enumerate() {
+        let is_selected = i == app.selected_sidebar;
+        let style = if is_selected {
             Style::default()
                 .bg(Color::Blue)
                 .fg(Color::White)
@@ -58,28 +74,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             Style::default()
         };
-        items.push(ListItem::new(name.as_str()).style(style));
-    }
-    if !app.tables.is_empty() && !app.queries.is_empty() {
-        let sep_style = Style::default().fg(Color::DarkGray);
-        items.push(ListItem::new("────────────").style(sep_style));
-    }
-    let offset = if app.tables.is_empty() {
-        0
-    } else {
-        app.tables.len() + 1
-    };
-    for (i, query) in app.queries.iter().enumerate() {
-        let sidebar_idx = offset + i;
-        let style = if sidebar_idx == app.selected_sidebar {
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        items.push(ListItem::new(query.name.as_str()).style(style));
+        match entry {
+            SidebarEntry::GroupHeader(gi) => {
+                let group = &app.groups[*gi];
+                let indicator = if group.expanded { "▼" } else { "▶" };
+                let text = format!("{} {}", indicator, group.name);
+                items.push(ListItem::new(text).style(style));
+            }
+            SidebarEntry::Table(ti) => {
+                let table = &app.tables[*ti];
+                let prefix = if has_group_headers { "  " } else { "" };
+                items.push(ListItem::new(format!("{}{}", prefix, table.name)).style(style));
+            }
+            SidebarEntry::Separator => {
+                let sep_style = Style::default().fg(Color::DarkGray);
+                items.push(ListItem::new("────────────").style(sep_style));
+            }
+            SidebarEntry::Query(_) => {
+                let query_idx = match entry {
+                    SidebarEntry::Query(qi) => *qi,
+                    _ => unreachable!(),
+                };
+                let query = &app.queries[query_idx];
+                items.push(ListItem::new(query.name.as_str()).style(style));
+            }
+        }
     }
 
     let mut sidebar_block = Block::default().title("Views").borders(Borders::ALL);
@@ -325,16 +344,27 @@ fn draw_table_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let (_, end_col) = visible_column_range(app.h_scroll, &app.headers, &col_widths, inner_width);
 
+    let table_display_name = match app.sidebar_entries.get(app.selected_sidebar) {
+        Some(SidebarEntry::Table(ti)) => {
+            let t = &app.tables[*ti];
+            if t.schema.is_empty() {
+                t.name.clone()
+            } else {
+                format!("{}.{}", t.schema, t.name)
+            }
+        }
+        _ => String::new(),
+    };
     let title = if app.headers.len() > (end_col - app.h_scroll) {
         format!(
             "Table: {} (cols {}-{} of {})",
-            app.tables[app.selected_sidebar],
+            table_display_name,
             app.h_scroll + 1,
             end_col,
             app.headers.len()
         )
     } else {
-        format!("Table: {}", app.tables[app.selected_sidebar])
+        format!("Table: {}", table_display_name)
     };
 
     let mut block = Block::default().title(title).borders(Borders::ALL);

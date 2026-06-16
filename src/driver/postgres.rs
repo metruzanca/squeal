@@ -2,7 +2,15 @@ use std::error::Error;
 
 use postgres::NoTls;
 
-use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
+
+fn parse_table_name(name: &str) -> (&str, &str) {
+    if let Some(dot) = name.find('.') {
+        (&name[..dot], &name[dot + 1..])
+    } else {
+        ("", name)
+    }
+}
 
 fn postgres_type_to_column_type(type_name: &str) -> ColumnType {
     let t = type_name.to_lowercase();
@@ -131,34 +139,43 @@ fn row_value_to_string(row: &postgres::Row, idx: usize) -> String {
 }
 
 impl DbDriver for PostgresDriver {
-    fn list_tables(&mut self) -> Result<Vec<String>, Box<dyn Error>> {
+    fn list_tables(&mut self) -> Result<Vec<TableInfo>, Box<dyn Error>> {
         let rows = self.client.query(
-            "SELECT table_name FROM information_schema.tables \
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE' \
-             ORDER BY table_name",
+            "SELECT table_schema, table_name FROM information_schema.tables \
+             WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast') \
+               AND table_type = 'BASE TABLE' \
+             ORDER BY table_schema, table_name",
             &[],
         )?;
-        let tables = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+        let tables = rows
+            .iter()
+            .map(|row| TableInfo {
+                schema: row.get::<_, String>(0),
+                name: row.get::<_, String>(1),
+            })
+            .collect();
         Ok(tables)
     }
 
     fn table_columns(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        let (schema, table) = parse_table_name(table_name);
         let rows = self.client.query(
             "SELECT column_name FROM information_schema.columns \
-             WHERE table_name = $1 AND table_schema = 'public' \
+             WHERE table_name = $1 AND table_schema = $2 \
              ORDER BY ordinal_position",
-            &[&table_name],
+            &[&table, &schema],
         )?;
         let columns = rows.iter().map(|row| row.get::<_, String>(0)).collect();
         Ok(columns)
     }
 
     fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>> {
+        let (schema, table) = parse_table_name(table_name);
         let rows = self.client.query(
             "SELECT data_type FROM information_schema.columns \
-             WHERE table_name = $1 AND table_schema = 'public' \
+             WHERE table_name = $1 AND table_schema = $2 \
              ORDER BY ordinal_position",
-            &[&table_name],
+            &[&table, &schema],
         )?;
         let types = rows
             .iter()
@@ -177,7 +194,13 @@ impl DbDriver for PostgresDriver {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let mut sql = format!("SELECT * FROM \"{}\"", escape_ident(table_name));
+        let (schema, table) = parse_table_name(table_name);
+        let qualified = if schema.is_empty() {
+            format!("\"{}\"", escape_ident(table))
+        } else {
+            format!("\"{}\".\"{}\"", escape_ident(schema), escape_ident(table))
+        };
+        let mut sql = format!("SELECT * FROM {}", qualified);
 
         let active_filters = collect_active_filters(filters);
 
@@ -295,24 +318,26 @@ impl DbDriver for PostgresDriver {
     }
 
     fn get_foreign_keys(&mut self, table_name: &str) -> Result<Vec<ForeignKeyInfo>, Box<dyn Error>> {
+        let (schema, table) = parse_table_name(table_name);
         let rows = self.client.query(
             "SELECT \
                 con.oid AS con_oid, \
                 a.attname AS from_col, \
-                c.relname AS ref_table, \
+                n2.nspname || '.' || c.relname AS ref_table, \
                 af.attname AS to_col, \
                 u.ord \
              FROM pg_constraint con \
              JOIN pg_class cl ON con.conrelid = cl.oid \
              JOIN pg_namespace n ON cl.relnamespace = n.oid \
              JOIN pg_class c ON con.confrelid = c.oid \
+             JOIN pg_namespace n2 ON c.relnamespace = n2.oid \
              CROSS JOIN LATERAL UNNEST(con.conkey, con.confkey) \
                  WITH ORDINALITY AS u(local_num, ref_num, ord) \
              JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = u.local_num \
              JOIN pg_attribute af ON af.attrelid = c.oid AND af.attnum = u.ref_num \
-             WHERE cl.relname = $1 AND con.contype = 'f' AND n.nspname = 'public' \
+             WHERE cl.relname = $1 AND con.contype = 'f' AND n.nspname = $2 \
              ORDER BY con.conname, u.ord",
-            &[&table_name],
+            &[&table, &schema],
         )?;
 
         let mut fks = Vec::new();
@@ -334,17 +359,23 @@ impl DbDriver for PostgresDriver {
         ref_column: &str,
         fk_value: &str,
     ) -> Result<Option<(Vec<String>, Vec<String>)>, Box<dyn Error>> {
+        let (schema, table) = parse_table_name(table_name);
         let rows = self.client.query(
             "SELECT column_name FROM information_schema.columns \
-             WHERE table_name = $1 AND table_schema = 'public' \
+             WHERE table_name = $1 AND table_schema = $2 \
              ORDER BY ordinal_position",
-            &[&table_name],
+            &[&table, &schema],
         )?;
         let headers: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
 
+        let qualified = if schema.is_empty() {
+            format!("\"{}\"", escape_ident(table))
+        } else {
+            format!("\"{}\".\"{}\"", escape_ident(schema), escape_ident(table))
+        };
         let query = format!(
-            "SELECT * FROM \"{}\" WHERE CAST(\"{}\" AS TEXT) = $1 LIMIT 1",
-            escape_ident(table_name),
+            "SELECT * FROM {} WHERE CAST(\"{}\" AS TEXT) = $1 LIMIT 1",
+            qualified,
             escape_ident(ref_column)
         );
         let stmt = self.client.prepare(&query)?;

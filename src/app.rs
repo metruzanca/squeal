@@ -1,14 +1,14 @@
 //! Application state and business logic.
 //!
-//! This module holds the [`App`] struct, which manages the SQLite connection, the list of
-//! database tables, the currently loaded table data, and all navigation/focus state. It also
+//! This module holds the [`App`] struct, which manages the database connection, the list of
+//! database tables, and all navigation/focus state. It also
 //! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
 //! scrolling both horizontally and vertically within the data panel.
 
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
-use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp};
+use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, TableInfo};
 use crate::ui::helpers::cursor_line_col;
 
 /// A single related record fetched for a foreign key value.
@@ -28,6 +28,21 @@ pub struct Query {
     pub sql: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SchemaGroup {
+    pub name: String,
+    pub expanded: bool,
+    pub table_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SidebarEntry {
+    GroupHeader(usize),
+    Table(usize),
+    Separator,
+    Query(usize),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterMode {
     None,
@@ -37,8 +52,10 @@ pub enum FilterMode {
 }
 
 pub struct App {
-    pub tables: Vec<String>,
+    pub tables: Vec<TableInfo>,
     pub queries: Vec<Query>,
+    pub groups: Vec<SchemaGroup>,
+    pub sidebar_entries: Vec<SidebarEntry>,
     pub selected_sidebar: usize,
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -78,6 +95,110 @@ pub struct App {
 }
 
 impl App {
+    fn build_groups(tables: &[TableInfo]) -> Vec<SchemaGroup> {
+        let mut group_map: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (i, t) in tables.iter().enumerate() {
+            let schema = if t.schema.is_empty() { "" } else { &t.schema };
+            group_map
+                .entry(schema.to_string())
+                .or_default()
+                .push(i);
+        }
+        let mut groups: Vec<SchemaGroup> = group_map
+            .into_iter()
+            .map(|(name, table_indices)| SchemaGroup {
+                expanded: name == "public",
+                name,
+                table_indices,
+            })
+            .collect();
+        // Sort so "public" is always first
+        if let Some(pub_idx) = groups.iter().position(|g| g.name == "public") {
+            if pub_idx != 0 {
+                let g = groups.remove(pub_idx);
+                groups.insert(0, g);
+            }
+        }
+        groups
+    }
+
+    fn rebuild_sidebar(&mut self) {
+        let mut entries = Vec::new();
+        let multi_group = self.groups.len() > 1
+            || (self.groups.len() == 1 && !self.groups[0].name.is_empty());
+
+        if multi_group {
+            for (gi, group) in self.groups.iter().enumerate() {
+                entries.push(SidebarEntry::GroupHeader(gi));
+                if group.expanded {
+                    for &ti in &group.table_indices {
+                        entries.push(SidebarEntry::Table(ti));
+                    }
+                }
+            }
+        } else {
+            // Single group: show tables flat (no group header)
+            if let Some(group) = self.groups.first() {
+                for &ti in &group.table_indices {
+                    entries.push(SidebarEntry::Table(ti));
+                }
+            }
+        }
+
+        if !self.tables.is_empty() && !self.queries.is_empty() {
+            entries.push(SidebarEntry::Separator);
+        }
+        for (qi, _) in self.queries.iter().enumerate() {
+            entries.push(SidebarEntry::Query(qi));
+        }
+        // Clamp selected_sidebar
+        if !entries.is_empty() && self.selected_sidebar >= entries.len() {
+            self.selected_sidebar = entries.len().saturating_sub(1);
+        }
+        self.sidebar_entries = entries;
+    }
+
+    fn table_ident(&self, index: usize) -> String {
+        let t = &self.tables[index];
+        if t.schema.is_empty() {
+            t.name.clone()
+        } else {
+            format!("{}.{}", t.schema, t.name)
+        }
+    }
+
+    fn table_ident_or_empty(&self, index: usize) -> String {
+        if index >= self.tables.len() {
+            String::new()
+        } else {
+            self.table_ident(index)
+        }
+    }
+
+    pub fn toggle_group(&mut self, group_idx: usize) {
+        if group_idx < self.groups.len() {
+            let g = &mut self.groups[group_idx];
+            g.expanded = !g.expanded;
+            self.rebuild_sidebar();
+        }
+    }
+
+    pub fn is_on_group_header(&self) -> bool {
+        if let Some(entry) = self.sidebar_entries.get(self.selected_sidebar) {
+            matches!(entry, SidebarEntry::GroupHeader(_))
+        } else {
+            false
+        }
+    }
+
+    pub fn current_group_index(&self) -> Option<usize> {
+        match self.sidebar_entries.get(self.selected_sidebar) {
+            Some(SidebarEntry::GroupHeader(gi)) => Some(*gi),
+            _ => None,
+        }
+    }
+
     pub fn new(mut driver: Box<dyn DbDriver>) -> Result<Self, Box<dyn std::error::Error>> {
         let tables = driver.list_tables()?;
 
@@ -87,7 +208,11 @@ impl App {
         let mut highlighter = Highlighter::new(themes::one_dark());
         let _ = highlighter.register_language(sql());
 
+        let groups = Self::build_groups(&tables);
+
         let mut app = App {
+            groups,
+            sidebar_entries: Vec::new(),
             tables,
             queries,
             selected_sidebar: 0,
@@ -128,6 +253,8 @@ impl App {
             working_dir,
         };
 
+        app.rebuild_sidebar();
+
         if !app.tables.is_empty() {
             app.load_table(0)?;
         }
@@ -139,13 +266,21 @@ impl App {
         if index >= self.tables.len() {
             return Ok(());
         }
-        self.selected_sidebar = index;
         self.is_query_view = false;
         self.query_edit_mode = false;
-        let table_name = &self.tables[index];
+        // Update selected_sidebar to point to this table's sidebar entry
+        for (i, entry) in self.sidebar_entries.iter().enumerate() {
+            if let SidebarEntry::Table(ti) = entry {
+                if *ti == index {
+                    self.selected_sidebar = i;
+                    break;
+                }
+            }
+        }
+        let table_ident = self.table_ident(index);
 
-        let headers = self.driver.table_columns(table_name)?;
-        let column_types = self.driver.table_column_types(table_name)?;
+        let headers = self.driver.table_columns(&table_ident)?;
+        let column_types = self.driver.table_column_types(&table_ident)?;
 
         // Set headers and reset filter state before fetching
         self.headers = headers;
@@ -160,7 +295,7 @@ impl App {
 
         let rows = self
             .driver
-            .fetch_rows(table_name, &self.headers, &self.filters, None, true, 0, 100)?;
+            .fetch_rows(&table_ident, &self.headers, &self.filters, None, true, 0, 100)?;
 
         self.rows = rows;
         self.has_more_rows = self.rows.len() == 100;
@@ -180,11 +315,15 @@ impl App {
         if self.tables.is_empty() || !self.has_more_rows || self.is_query_view {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected_sidebar];
+        let table_index = self.current_table_index();
+        let Some(ti) = table_index else {
+            return Ok(());
+        };
+        let table_ident = self.table_ident(ti);
         let offset = self.rows.len();
 
         let new_rows = self.driver.fetch_rows(
-            table_name,
+            &table_ident,
             &self.headers,
             &self.filters,
             self.sort_col,
@@ -201,20 +340,24 @@ impl App {
         if self.table_focused {
             return;
         }
-        let len = self.sidebar_len();
+        let len = self.sidebar_entries.len();
         if len == 0 {
             return;
         }
         let mut next = (self.selected_sidebar + 1) % len;
         // Skip separator
-        if !self.tables.is_empty() && !self.queries.is_empty() && next == self.tables.len() {
+        if let Some(SidebarEntry::Separator) = self.sidebar_entries.get(next) {
             next = (next + 1) % len;
         }
         self.selected_sidebar = next;
-        if self.current_is_table() {
-            let _ = self.load_table(self.selected_sidebar);
-        } else if self.current_is_query() {
-            let _ = self.load_query(self.query_index());
+        match self.sidebar_entries.get(next) {
+            Some(SidebarEntry::Table(ti)) => {
+                let _ = self.load_table(*ti);
+            }
+            Some(SidebarEntry::Query(qi)) => {
+                let _ = self.load_query(*qi);
+            }
+            _ => {}
         }
     }
 
@@ -222,7 +365,7 @@ impl App {
         if self.table_focused {
             return;
         }
-        let len = self.sidebar_len();
+        let len = self.sidebar_entries.len();
         if len == 0 {
             return;
         }
@@ -232,14 +375,22 @@ impl App {
             self.selected_sidebar - 1
         };
         // Skip separator
-        if !self.tables.is_empty() && !self.queries.is_empty() && prev == self.tables.len() {
-            prev = if prev == 0 { len - 1 } else { prev - 1 };
+        while let Some(SidebarEntry::Separator) = self.sidebar_entries.get(prev) {
+            if prev == 0 {
+                prev = len - 1;
+            } else {
+                prev -= 1;
+            }
         }
         self.selected_sidebar = prev;
-        if self.current_is_table() {
-            let _ = self.load_table(self.selected_sidebar);
-        } else if self.current_is_query() {
-            let _ = self.load_query(self.query_index());
+        match self.sidebar_entries.get(prev) {
+            Some(SidebarEntry::Table(ti)) => {
+                let _ = self.load_table(*ti);
+            }
+            Some(SidebarEntry::Query(qi)) => {
+                let _ = self.load_query(*qi);
+            }
+            _ => {}
         }
     }
 
@@ -387,13 +538,14 @@ impl App {
             self.modal_needs_h_scroll = false;
             return Ok(());
         }
-        let table_name = &self.tables[self.selected_sidebar];
-        let fks = self.driver.get_foreign_keys(table_name)?;
+        let table_index = self.current_table_index().unwrap_or(self.selected_sidebar);
+        let table_ident = self.table_ident_or_empty(table_index);
+        let fks = self.driver.get_foreign_keys(&table_ident)?;
         let row = &self.rows[selected];
         if fks.is_empty() {
             // No FKs: show the current row data as a detail view
             self.modal_records = vec![RelatedRecord {
-                table_name: table_name.clone(),
+                table_name: table_ident.clone(),
                 fk_column: "Row".to_string(),
                 ref_column: "Data".to_string(),
                 fk_value: (selected + 1).to_string(),
@@ -497,7 +649,16 @@ impl App {
         }
         let target_table = self.modal_records[self.modal_selected].table_name.clone();
         self.close_modal();
-        if let Some(idx) = self.tables.iter().position(|t| t == &target_table) {
+        if let Some(idx) = self.tables.iter().position(|t| {
+            let ti = if t.schema.is_empty() {
+                t.name.clone()
+            } else {
+                format!("{}.{}", t.schema, t.name)
+            };
+            ti == target_table
+        }) {
+            let _ = self.load_table(idx);
+        } else if let Some(idx) = self.tables.iter().position(|t| t.name == target_table) {
             let _ = self.load_table(idx);
         }
     }
@@ -664,10 +825,11 @@ impl App {
         if self.tables.is_empty() || self.is_query_view || self.headers.is_empty() {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected_sidebar];
+        let ti = self.current_table_index().unwrap_or(self.selected_sidebar);
+        let table_ident = self.table_ident_or_empty(ti);
         let fetch_count = self.rows.len().max(100);
         let new_rows = self.driver.fetch_rows(
-            table_name,
+            &table_ident,
             &self.headers,
             &self.filters,
             self.sort_col,
@@ -692,10 +854,11 @@ impl App {
         if self.tables.is_empty() {
             return Ok(());
         }
-        let table_name = &self.tables[self.selected_sidebar];
+        let ti = self.current_table_index().unwrap_or(self.selected_sidebar);
+        let table_ident = self.table_ident_or_empty(ti);
 
         self.rows = self.driver.fetch_rows(
-            table_name,
+            &table_ident,
             &self.headers,
             &self.filters,
             self.sort_col,
@@ -875,45 +1038,55 @@ impl App {
         if index >= self.queries.len() {
             return Ok(());
         }
-        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
-        self.selected_sidebar = offset + index;
         self.query_text = self.queries[index].sql.clone();
         self.query_cursor = self.query_text.chars().count();
         self.query_scroll = 0;
         self.is_query_view = true;
         self.query_edit_mode = false;
         self.run_query()?;
+        // Find the sidebar entry for this query and set selected_sidebar
+        for (i, entry) in self.sidebar_entries.iter().enumerate() {
+            if let SidebarEntry::Query(qi) = entry {
+                if *qi == index {
+                    self.selected_sidebar = i;
+                    break;
+                }
+            }
+        }
         Ok(())
     }
 
     // Sidebar helpers
     pub fn sidebar_len(&self) -> usize {
-        let mut len = self.tables.len();
-        if !self.queries.is_empty() {
-            if !self.tables.is_empty() {
-                len += 1; // separator
-            }
-            len += self.queries.len();
-        }
-        len
+        self.sidebar_entries.len()
     }
 
     pub fn current_is_table(&self) -> bool {
-        self.selected_sidebar < self.tables.len()
+        match self.sidebar_entries.get(self.selected_sidebar) {
+            Some(SidebarEntry::Table(_)) => true,
+            _ => false,
+        }
     }
 
     pub fn current_is_query(&self) -> bool {
-        if self.queries.is_empty() {
-            false
-        } else {
-            let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
-            self.selected_sidebar >= offset
+        match self.sidebar_entries.get(self.selected_sidebar) {
+            Some(SidebarEntry::Query(_)) => true,
+            _ => false,
+        }
+    }
+
+    pub fn current_table_index(&self) -> Option<usize> {
+        match self.sidebar_entries.get(self.selected_sidebar) {
+            Some(SidebarEntry::Table(ti)) => Some(*ti),
+            _ => None,
         }
     }
 
     pub fn query_index(&self) -> usize {
-        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
-        self.selected_sidebar - offset
+        match self.sidebar_entries.get(self.selected_sidebar) {
+            Some(SidebarEntry::Query(qi)) => *qi,
+            _ => 0,
+        }
     }
 
     pub fn save_current_query(&mut self) {
@@ -990,8 +1163,7 @@ impl App {
         }
 
         self.queries.push(query);
-        let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
-        self.selected_sidebar = offset + self.queries.len() - 1;
+        self.rebuild_sidebar();
         self.query_text = String::new();
         self.query_cursor = 0;
         self.query_scroll = 0;
@@ -1021,21 +1193,23 @@ impl App {
             }
         }
         self.queries.remove(idx);
+        self.rebuild_sidebar();
         if self.queries.is_empty() {
             self.is_query_view = false;
             self.query_edit_mode = false;
             self.table_focused = false;
             if !self.tables.is_empty() {
-                self.selected_sidebar = self.tables.len().saturating_sub(1);
-                let _ = self.load_table(self.selected_sidebar);
+                if let Some(first_table) = self.sidebar_entries.iter().position(|e| matches!(e, SidebarEntry::Table(_))) {
+                    self.selected_sidebar = first_table;
+                    if let Some(SidebarEntry::Table(ti)) = self.sidebar_entries.get(first_table) {
+                        let _ = self.load_table(*ti);
+                    }
+                }
             } else {
                 self.selected_sidebar = 0;
             }
         } else {
-            let offset = if self.tables.is_empty() { 0 } else { self.tables.len() + 1 };
-            let max_query = self.queries.len() - 1;
-            let new_idx = idx.min(max_query);
-            self.selected_sidebar = offset + new_idx;
+            let new_idx = idx.min(self.queries.len() - 1);
             let _ = self.load_query(new_idx);
         }
     }

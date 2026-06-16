@@ -2,7 +2,7 @@ use std::error::Error;
 
 use rusqlite::{Connection, Result as SqliteResult};
 
-use crate::driver::{collect_active_filters, sqlite_value_to_string, ColumnType, DbDriver, FilterOp, ForeignKeyInfo};
+use crate::driver::{collect_active_filters, sqlite_value_to_string, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
 
 fn sqlite_type_to_column_type(type_name: &str) -> ColumnType {
     let t = type_name.to_lowercase();
@@ -37,13 +37,20 @@ impl SQLiteDriver {
 }
 
 impl DbDriver for SQLiteDriver {
-    fn list_tables(&mut self) -> Result<Vec<String>, Box<dyn Error>> {
+    fn list_tables(&mut self) -> Result<Vec<TableInfo>, Box<dyn Error>> {
         let mut stmt = self
             .conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
-        let tables = stmt
+        let names = stmt
             .query_map([], |row| row.get(0))?
             .collect::<SqliteResult<Vec<String>>>()?;
+        let tables = names
+            .into_iter()
+            .map(|name| TableInfo {
+                schema: String::new(),
+                name,
+            })
+            .collect();
         Ok(tables)
     }
 

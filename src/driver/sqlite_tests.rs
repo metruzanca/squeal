@@ -91,7 +91,9 @@ mod tests {
         let mut driver = SQLiteDriver::from_connection(conn);
 
         let tables = driver.list_tables().unwrap();
-        assert_eq!(tables, vec!["products", "users"]);
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].name, "products");
+        assert_eq!(tables[1].name, "users");
     }
 
     #[test]

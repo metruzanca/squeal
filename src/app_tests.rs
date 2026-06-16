@@ -21,21 +21,21 @@ mod tests {
         test_db::TestDb::simple(path);
         let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
         assert_eq!(app.selected_sidebar, 0);
-        assert_eq!(app.tables[app.selected_sidebar], "products");
+        assert_eq!(app.tables[0].name, "products");
 
         app.next();
         assert_eq!(app.selected_sidebar, 1);
-        assert_eq!(app.tables[app.selected_sidebar], "users");
+        assert_eq!(app.tables[1].name, "users");
         assert_eq!(app.headers, vec!["id", "name", "email"]);
         assert_eq!(app.rows.len(), 3);
 
         app.next();
         assert_eq!(app.selected_sidebar, 0);
-        assert_eq!(app.tables[app.selected_sidebar], "products");
+        assert_eq!(app.tables[0].name, "products");
 
         app.previous();
         assert_eq!(app.selected_sidebar, 1);
-        assert_eq!(app.tables[app.selected_sidebar], "users");
+        assert_eq!(app.tables[1].name, "users");
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         // Navigate to orders table (should be index 2 after sorting: categories, orders, products, users)
-        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         assert_eq!(app.table_state.selected(), Some(0));
@@ -369,7 +369,7 @@ mod tests {
     fn test_close_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
-        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
@@ -385,7 +385,7 @@ mod tests {
     fn test_unfocus_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
-        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
@@ -400,14 +400,14 @@ mod tests {
     fn test_load_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
-        app.selected_sidebar = app.tables.iter().position(|t| t == "orders").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();
         assert!(app.modal_open);
 
         // Load a different table
-        app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "users").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         assert!(!app.modal_open);
         assert!(app.modal_records.is_empty());
@@ -418,7 +418,7 @@ mod tests {
         let conn = test_db::TestDb::in_memory_demo();
         let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
         // users table has no foreign keys - should show row details instead
-        app.selected_sidebar = app.tables.iter().position(|t| t == "users").unwrap();
+        app.selected_sidebar = app.tables.iter().position(|t| t.name == "users").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
         app.open_modal().unwrap();

@@ -307,6 +307,26 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     KeyCode::Tab | KeyCode::Enter => app.focus_table(),
                     KeyCode::Char('j') | KeyCode::Down => app.next(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                    KeyCode::Left => {
+                        if app.is_on_group_header() {
+                            if let Some(gi) = app.current_group_index() {
+                                // Only collapse if currently expanded
+                                if app.groups.get(gi).is_some_and(|g| g.expanded) {
+                                    app.toggle_group(gi);
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Right => {
+                        if app.is_on_group_header() {
+                            if let Some(gi) = app.current_group_index() {
+                                // Only expand if currently collapsed
+                                if app.groups.get(gi).is_some_and(|g| !g.expanded) {
+                                    app.toggle_group(gi);
+                                }
+                            }
+                        }
+                    }
                     KeyCode::Char('n') => {
                         app.create_new_query();
                     }
