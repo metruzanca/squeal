@@ -5,6 +5,7 @@
 //! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
 //! scrolling both horizontally and vertically within the data panel.
 
+use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
@@ -51,6 +52,20 @@ pub enum FilterMode {
     ValueInput,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FuzzyKind {
+    Table,
+    Query,
+}
+
+pub struct FuzzyEntry {
+    pub kind: FuzzyKind,
+    pub label: String,
+    pub display: String,
+    pub table_index: Option<usize>,
+    pub query_index: Option<usize>,
+}
+
 pub struct App {
     pub tables: Vec<TableInfo>,
     pub queries: Vec<Query>,
@@ -92,6 +107,11 @@ pub struct App {
     pub save_queries: bool,
     pub all_rows: Vec<Vec<String>>,
     pub working_dir: std::path::PathBuf,
+    pub fuzzy_open: bool,
+    pub fuzzy_query: String,
+    pub fuzzy_selected: usize,
+    pub fuzzy_matches: Vec<usize>,
+    pub fuzzy_entries: Vec<FuzzyEntry>,
 }
 
 impl App {
@@ -251,6 +271,11 @@ impl App {
             all_rows: Vec::new(),
             column_types: Vec::new(),
             working_dir,
+            fuzzy_open: false,
+            fuzzy_query: String::new(),
+            fuzzy_selected: 0,
+            fuzzy_matches: Vec::new(),
+            fuzzy_entries: Vec::new(),
         };
 
         app.rebuild_sidebar();
@@ -1352,6 +1377,132 @@ impl App {
         } else if line < self.query_scroll {
             self.query_scroll = line;
         }
+    }
+
+    // Fuzzy finder methods
+
+    pub fn toggle_fuzzy(&mut self) {
+        if self.fuzzy_open {
+            self.close_fuzzy();
+            return;
+        }
+        self.fuzzy_open = true;
+        self.fuzzy_query = String::new();
+        self.fuzzy_selected = 0;
+        self.build_fuzzy_entries();
+    }
+
+    pub fn close_fuzzy(&mut self) {
+        self.fuzzy_open = false;
+        self.fuzzy_query = String::new();
+        self.fuzzy_selected = 0;
+        self.fuzzy_matches = Vec::new();
+        self.fuzzy_entries = Vec::new();
+    }
+
+    fn build_fuzzy_entries(&mut self) {
+        let mut entries = Vec::new();
+        for (ti, table) in self.tables.iter().enumerate() {
+            let label = if table.schema.is_empty() {
+                table.name.clone()
+            } else {
+                format!("{}.{}", table.schema, table.name)
+            };
+            let display = format!("[T] {}", label);
+            entries.push(FuzzyEntry {
+                kind: FuzzyKind::Table,
+                label,
+                display,
+                table_index: Some(ti),
+                query_index: None,
+            });
+        }
+        for (qi, query) in self.queries.iter().enumerate() {
+            let display = format!("[Q] {}", query.name);
+            entries.push(FuzzyEntry {
+                kind: FuzzyKind::Query,
+                label: query.name.clone(),
+                display,
+                table_index: None,
+                query_index: Some(qi),
+            });
+        }
+        self.fuzzy_entries = entries;
+        self.apply_fuzzy_filter();
+    }
+
+    fn apply_fuzzy_filter(&mut self) {
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let query = self.fuzzy_query.trim();
+        if query.is_empty() {
+            self.fuzzy_matches = (0..self.fuzzy_entries.len()).collect();
+            self.fuzzy_selected = 0;
+            return;
+        }
+        let mut scored: Vec<(i64, usize)> = self
+            .fuzzy_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                matcher.fuzzy_match(&entry.label, query).map(|score| (score, i))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        self.fuzzy_matches = scored.into_iter().map(|(_, i)| i).collect();
+        if self.fuzzy_selected >= self.fuzzy_matches.len() {
+            self.fuzzy_selected = self.fuzzy_matches.len().saturating_sub(1);
+        }
+    }
+
+    pub fn fuzzy_input_char(&mut self, c: char) {
+        self.fuzzy_query.push(c);
+        self.apply_fuzzy_filter();
+    }
+
+    pub fn fuzzy_input_backspace(&mut self) {
+        self.fuzzy_query.pop();
+        self.apply_fuzzy_filter();
+    }
+
+    pub fn fuzzy_next(&mut self) {
+        if self.fuzzy_matches.is_empty() {
+            return;
+        }
+        self.fuzzy_selected = (self.fuzzy_selected + 1) % self.fuzzy_matches.len();
+    }
+
+    pub fn fuzzy_previous(&mut self) {
+        if self.fuzzy_matches.is_empty() {
+            return;
+        }
+        self.fuzzy_selected = if self.fuzzy_selected == 0 {
+            self.fuzzy_matches.len() - 1
+        } else {
+            self.fuzzy_selected - 1
+        };
+    }
+
+    pub fn fuzzy_select(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.fuzzy_matches.is_empty() {
+            self.close_fuzzy();
+            return Ok(());
+        }
+        let entry_idx = self.fuzzy_matches[self.fuzzy_selected];
+        let entry = &self.fuzzy_entries[entry_idx];
+        match entry.kind {
+            FuzzyKind::Table => {
+                if let Some(ti) = entry.table_index {
+                    self.load_table(ti)?;
+                }
+            }
+            FuzzyKind::Query => {
+                if let Some(qi) = entry.query_index {
+                    self.load_query(qi)?;
+                }
+            }
+        }
+        self.close_fuzzy();
+        Ok(())
     }
 }
 

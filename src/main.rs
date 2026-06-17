@@ -8,7 +8,7 @@ use std::io::{self, stdout, Stdout};
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -153,6 +153,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 fn should_auto_refresh(app: &App) -> bool {
     !app.help_open
         && !app.modal_open
+        && !app.fuzzy_open
         && app.filter_mode == app::FilterMode::None
         && !app.is_query_view
         && !app.headers.is_empty()
@@ -166,8 +167,21 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
 
         if event::poll(REFRESH_INTERVAL)? {
             if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
-            if key.code == KeyCode::Char('q') {
+            if app.fuzzy_open {
+                match key.code {
+                    KeyCode::Backspace => app.fuzzy_input_backspace(),
+                    KeyCode::Enter => { let _ = app.fuzzy_select(); }
+                    KeyCode::Esc => app.close_fuzzy(),
+                    KeyCode::Down => app.fuzzy_next(),
+                    KeyCode::Up => app.fuzzy_previous(),
+                    KeyCode::Char(c) => app.fuzzy_input_char(c),
+                    _ => {}
+                }
+            } else if key.code == KeyCode::Char('q') {
                 break;
+            } else if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('k'))
+                && key.modifiers.contains(KeyModifiers::CONTROL) {
+                app.toggle_fuzzy();
             } else if app.help_open {
                 if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
                     app.close_help();

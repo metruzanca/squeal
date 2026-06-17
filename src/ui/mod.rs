@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, FilterMode, SidebarEntry};
+use crate::app::{App, FilterMode, FuzzyKind, SidebarEntry};
 
 pub mod filters;
 pub mod helpers;
@@ -150,6 +150,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Modal overlay
     if app.modal_open {
         draw_modal(frame, app);
+    }
+
+    // Fuzzy finder overlay (rendered last, on top of everything)
+    if app.fuzzy_open {
+        draw_fuzzy_modal(frame, app);
     }
 }
 
@@ -469,6 +474,7 @@ fn draw_help_modal(frame: &mut Frame) {
     )));
     help_lines.push(Line::from("  q          : Quit"));
     help_lines.push(Line::from("  ?          : Toggle Help"));
+    help_lines.push(Line::from("  Ctrl+P/K   : Fuzzy Finder"));
     help_lines.push(Line::from(""));
     help_lines.push(Line::from(Span::styled(
         "Sidebar",
@@ -554,6 +560,20 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  l / Right  : Scroll right"));
     help_lines.push(Line::from("  Enter      : Go to referenced table"));
     help_lines.push(Line::from("  Esc        : Close modal"));
+    help_lines.push(Line::from(""));
+    help_lines.push(Line::from(Span::styled(
+        "Fuzzy Finder",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    help_lines.push(Line::from("  Ctrl+P/K   : Open finder"));
+    help_lines.push(Line::from("  Type       : Filter items"));
+    help_lines.push(Line::from("  Enter      : Go to selected"));
+    help_lines.push(Line::from("  Esc        : Close finder"));
+    help_lines.push(Line::from("  j / Down   : Next item"));
+    help_lines.push(Line::from("  k / Up     : Previous item"));
+    help_lines.push(Line::from("  Bksp       : Delete character"));
 
     let help_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -651,6 +671,64 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
     }
 }
 
+fn draw_fuzzy_modal(frame: &mut Frame, app: &mut App) {
+    let area = centered_rect(60, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Fuzzy Finder")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block, area);
+
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Fill(1)])
+        .split(inner);
+
+    let input_prefix = "> ";
+    let input_text = format!("{}{}", input_prefix, app.fuzzy_query);
+    let input_paragraph = Paragraph::new(input_text.as_str())
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(input_paragraph, layout[0]);
+
+    let cursor_x = layout[0].x + input_prefix.chars().count() as u16 + app.fuzzy_query.chars().count() as u16;
+    frame.set_cursor_position((cursor_x, layout[0].y));
+
+    if app.fuzzy_matches.is_empty() {
+        let no_results = Paragraph::new("No matches")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(no_results, layout[1]);
+    } else {
+        let mut items: Vec<ListItem> = Vec::new();
+        for (i, &entry_idx) in app.fuzzy_matches.iter().enumerate() {
+            let entry = &app.fuzzy_entries[entry_idx];
+            let is_selected = i == app.fuzzy_selected;
+            let style = if is_selected {
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                match entry.kind {
+                    FuzzyKind::Table => Style::default().fg(Color::Cyan),
+                    FuzzyKind::Query => Style::default().fg(Color::Green),
+                }
+            };
+            items.push(ListItem::new(entry.display.as_str()).style(style));
+        }
+        let list = List::new(items);
+        frame.render_widget(list, layout[1]);
+    }
+}
+
 fn build_keybinds(app: &App) -> Vec<Span<'_>> {
     if app.modal_open {
         vec![
@@ -659,7 +737,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
             Span::raw("Esc"),
             Span::styled(": Close   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Enter"),
-            Span::styled(": Go to Table", Style::default().fg(Color::DarkGray)),
+            Span::styled(": Go to Table   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Ctrl+P"),
+            Span::styled(": Find", Style::default().fg(Color::DarkGray)),
         ]
     } else if app.table_focused {
         if app.filter_mode != FilterMode::None {
@@ -672,7 +752,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("Enter"),
                     Span::styled(": Add/Edit   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
-                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Remove   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ],
                 FilterMode::TypeSelect => vec![
                     Span::raw(" q"),
@@ -682,7 +764,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("Enter"),
                     Span::styled(": Value   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
-                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Remove   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ],
                 FilterMode::ValueInput => vec![
                     Span::raw(" q"),
@@ -692,7 +776,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("Enter"),
                     Span::styled(": Apply   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Del"),
-                    Span::styled(": Remove", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Remove   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ],
                 FilterMode::None => unreachable!(),
             }
@@ -706,7 +792,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("Enter"),
                     Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Bksp"),
-                    Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Delete   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ]
             } else if app.query_edit_mode {
                 vec![
@@ -717,7 +805,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("Ctrl+Enter"),
                     Span::styled(": Run   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Bksp"),
-                    Span::styled(": Delete", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Delete   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ]
             } else {
                 vec![
@@ -730,7 +820,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::raw("r"),
                     Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("/"),
-                    Span::styled(": Filter", Style::default().fg(Color::DarkGray)),
+                    Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Ctrl+P"),
+                    Span::styled(": Find", Style::default().fg(Color::DarkGray)),
                 ]
             }
         } else {
@@ -744,7 +836,9 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                 Span::raw("/"),
                 Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("r"),
-                Span::styled(": Refresh", Style::default().fg(Color::DarkGray)),
+                Span::styled(": Refresh   ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Ctrl+P"),
+                Span::styled(": Find", Style::default().fg(Color::DarkGray)),
             ]
         }
     } else {
@@ -753,6 +847,8 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
             Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Tab"),
             Span::styled(": View   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Ctrl+P"),
+            Span::styled(": Find   ", Style::default().fg(Color::DarkGray)),
 
         ];
         if app.current_is_query() {

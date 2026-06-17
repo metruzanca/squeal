@@ -23,6 +23,7 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 tui-syntax = "0.6"
 artbox = { version = "0.3", features = ["ratatui"] }
+fuzzy-matcher = "0.3"
 
 [dev-dependencies]
 testcontainers = { version = "0.27", features = ["blocking"] }
