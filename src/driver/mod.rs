@@ -72,6 +72,7 @@ pub trait DbDriver {
     ) -> Result<Vec<Vec<String>>, Box<dyn Error>>;
     fn run_query(&mut self, sql: &str) -> Result<(Vec<String>, Vec<Vec<String>>), Box<dyn Error>>;
     fn get_foreign_keys(&mut self, table_name: &str) -> Result<Vec<ForeignKeyInfo>, Box<dyn Error>>;
+    fn table_primary_keys(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>>;
     fn fetch_related_record(
         &mut self,
         table_name: &str,

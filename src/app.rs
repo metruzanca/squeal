@@ -9,7 +9,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
-use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, TableInfo};
+use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
 use crate::ui::helpers::cursor_line_col;
 
 /// A single related record fetched for a foreign key value.
@@ -112,6 +112,13 @@ pub struct App {
     pub fuzzy_selected: usize,
     pub fuzzy_matches: Vec<usize>,
     pub fuzzy_entries: Vec<FuzzyEntry>,
+    pub peak_open: bool,
+    pub peak_headers: Vec<String>,
+    pub peak_row: Vec<String>,
+    pub peak_scroll: usize,
+    pub peak_column_types: Vec<ColumnType>,
+    pub peak_primary_keys: Vec<String>,
+    pub peak_foreign_keys: Vec<ForeignKeyInfo>,
 }
 
 impl App {
@@ -276,6 +283,13 @@ impl App {
             fuzzy_selected: 0,
             fuzzy_matches: Vec::new(),
             fuzzy_entries: Vec::new(),
+            peak_open: false,
+            peak_headers: Vec::new(),
+            peak_row: Vec::new(),
+            peak_scroll: 0,
+            peak_column_types: Vec::new(),
+            peak_primary_keys: Vec::new(),
+            peak_foreign_keys: Vec::new(),
         };
 
         app.rebuild_sidebar();
@@ -327,6 +341,7 @@ impl App {
         self.h_scroll = 0;
         self.scroll_offset = 0;
         self.close_modal();
+        self.close_peak();
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
         } else {
@@ -445,6 +460,7 @@ impl App {
         self.table_state = TableState::new();
         self.h_scroll = 0;
         self.close_modal();
+        self.close_peak();
         self.filter_mode = FilterMode::None;
         self.query_edit_mode = false;
     }
@@ -618,6 +634,54 @@ impl App {
         self.modal_selected = 0;
         self.modal_h_scroll = 0;
         self.modal_needs_h_scroll = false;
+    }
+
+    pub fn open_peak(&mut self) {
+        let Some(selected) = self.table_state.selected() else {
+            return;
+        };
+        if selected >= self.rows.len() {
+            return;
+        }
+        self.peak_headers = self.headers.clone();
+        self.peak_row = self.rows[selected].clone();
+        self.peak_column_types = self.column_types.clone();
+        self.peak_scroll = 0;
+        self.peak_open = true;
+
+        if self.is_query_view {
+            self.peak_primary_keys.clear();
+            self.peak_foreign_keys.clear();
+        } else {
+            let ti = self.current_table_index().unwrap_or(self.selected_sidebar);
+            let table_ident = self.table_ident_or_empty(ti);
+            self.peak_primary_keys = self
+                .driver
+                .table_primary_keys(&table_ident)
+                .unwrap_or_default();
+            self.peak_foreign_keys = self
+                .driver
+                .get_foreign_keys(&table_ident)
+                .unwrap_or_default();
+        }
+    }
+
+    pub fn close_peak(&mut self) {
+        self.peak_open = false;
+        self.peak_headers.clear();
+        self.peak_row.clear();
+        self.peak_scroll = 0;
+        self.peak_column_types.clear();
+        self.peak_primary_keys.clear();
+        self.peak_foreign_keys.clear();
+    }
+
+    pub fn peak_scroll_down(&mut self) {
+        self.peak_scroll += 1;
+    }
+
+    pub fn peak_scroll_up(&mut self) {
+        self.peak_scroll = self.peak_scroll.saturating_sub(1);
     }
 
     pub fn toggle_help(&mut self) {

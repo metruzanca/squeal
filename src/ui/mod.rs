@@ -152,6 +152,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_modal(frame, app);
     }
 
+    // Peak overlay
+    if app.peak_open {
+        draw_peak(frame, app);
+    }
+
     // Fuzzy finder overlay (rendered last, on top of everything)
     if app.fuzzy_open {
         draw_fuzzy_modal(frame, app);
@@ -501,6 +506,7 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  PgUp/PgDn  : Page up / down"));
     help_lines.push(Line::from("  Tab        : Back to sidebar"));
     help_lines.push(Line::from("  Enter      : Open Details"));
+    help_lines.push(Line::from("  Space      : Peak Row (full values)"));
     help_lines.push(Line::from("  /          : Filter mode"));
     help_lines.push(Line::from("  r          : Refresh data"));
     help_lines.push(Line::from("  Auto       : Refreshes every 5 sec"));
@@ -729,6 +735,93 @@ fn draw_fuzzy_modal(frame: &mut Frame, app: &mut App) {
     }
 }
 
+fn draw_peak(frame: &mut Frame, app: &App) {
+    let area = centered_rect(80, 80, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title("Peak View")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block, area);
+
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+
+    if app.peak_row.is_empty() {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (col_idx, (header, value)) in app.peak_headers.iter().zip(app.peak_row.iter()).enumerate() {
+        let col_type = app
+            .peak_column_types
+            .get(col_idx)
+            .cloned()
+            .unwrap_or(crate::driver::ColumnType::Other);
+        let is_pk = app.peak_primary_keys.contains(header);
+        let fk_ref = app
+            .peak_foreign_keys
+            .iter()
+            .find(|fk| fk.from == *header)
+            .map(|fk| format!("{} ({})", fk.table, fk.to));
+
+        lines.push(Line::from(Span::styled(
+            format!("{}:", header),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        let type_label = match col_type {
+            crate::driver::ColumnType::Number => "Number",
+            crate::driver::ColumnType::String => "String",
+            crate::driver::ColumnType::Other => "Other",
+        };
+        let mut meta_parts: Vec<Span> = Vec::new();
+        meta_parts.push(Span::styled(
+            type_label,
+            Style::default().fg(Color::Cyan),
+        ));
+        if is_pk {
+            meta_parts.push(Span::raw("  "));
+            meta_parts.push(Span::styled(
+                "PK",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if let Some(ref fk_text) = fk_ref {
+            meta_parts.push(Span::raw("  "));
+            meta_parts.push(Span::styled(
+                format!("FK \u{2192} {}", fk_text),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        lines.push(Line::from(meta_parts));
+
+        if value.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(empty)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for val_line in value.lines() {
+                lines.push(Line::from(Span::raw(val_line.to_string())));
+            }
+        }
+    }
+
+    let visible_lines = inner.height.saturating_sub(1) as usize;
+    let start = app.peak_scroll.min(lines.len().saturating_sub(1));
+    let end = (start + visible_lines).min(lines.len());
+
+    let paragraph = Paragraph::new(lines[start..end].to_vec());
+    frame.render_widget(paragraph, inner);
+}
+
 fn build_keybinds(app: &App) -> Vec<Span<'_>> {
     if app.modal_open {
         vec![
@@ -738,6 +831,17 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
             Span::styled(": Close   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Enter"),
             Span::styled(": Go to Table   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Ctrl+P"),
+            Span::styled(": Find", Style::default().fg(Color::DarkGray)),
+        ]
+    } else if app.peak_open {
+        vec![
+            Span::raw(" q"),
+            Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Esc"),
+            Span::styled(": Close   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("j/k"),
+            Span::styled(": Scroll   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Ctrl+P"),
             Span::styled(": Find", Style::default().fg(Color::DarkGray)),
         ]
@@ -819,6 +923,8 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::styled(": SQL   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("r"),
                     Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Space"),
+                    Span::styled(": Peak   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("/"),
                     Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Ctrl+P"),
@@ -833,6 +939,8 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                 Span::styled(": Table List   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("Enter"),
                 Span::styled(": Details   ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Space"),
+                Span::styled(": Peak   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("/"),
                 Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("r"),

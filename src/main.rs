@@ -154,6 +154,7 @@ fn should_auto_refresh(app: &App) -> bool {
     !app.help_open
         && !app.modal_open
         && !app.fuzzy_open
+        && !app.peak_open
         && app.filter_mode == app::FilterMode::None
         && !app.is_query_view
         && !app.headers.is_empty()
@@ -194,6 +195,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                     KeyCode::Char('h') | KeyCode::Left => app.modal_h_scroll_left(),
                     KeyCode::Char('l') | KeyCode::Right => app.modal_h_scroll_right(),
                     KeyCode::Enter => app.modal_select_table(),
+                    _ => {}
+                }
+            } else if app.peak_open {
+                match key.code {
+                    KeyCode::Esc => app.close_peak(),
+                    KeyCode::Char('j') | KeyCode::Down => app.peak_scroll_down(),
+                    KeyCode::Char('k') | KeyCode::Up => app.peak_scroll_up(),
                     _ => {}
                 }
             } else if key.code == KeyCode::Esc {
@@ -297,6 +305,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                             KeyCode::PageDown => app.page_down(),
                             KeyCode::PageUp => app.page_up(),
                             KeyCode::Enter => { let _ = app.open_modal(); }
+                            KeyCode::Char(' ') => app.open_peak(),
                             _ => {}
                         }
                     }
@@ -312,6 +321,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                         KeyCode::PageDown => app.page_down(),
                         KeyCode::PageUp => app.page_up(),
                         KeyCode::Enter => { let _ = app.open_modal(); }
+                        KeyCode::Char(' ') => app.open_peak(),
                         KeyCode::Char('r') => { let _ = app.refresh_current_table(); }
                         _ => {}
                     }

@@ -317,6 +317,23 @@ impl DbDriver for PostgresDriver {
         Ok((headers, result))
     }
 
+    fn table_primary_keys(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        let (schema, table) = parse_table_name(table_name);
+        let rows = self.client.query(
+            "SELECT a.attname \
+             FROM pg_constraint con \
+             JOIN pg_class cl ON con.conrelid = cl.oid \
+             JOIN pg_namespace n ON cl.relnamespace = n.oid \
+             CROSS JOIN LATERAL UNNEST(con.conkey) WITH ORDINALITY AS u(col_num) \
+             JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = u.col_num \
+             WHERE cl.relname = $1 AND n.nspname = $2 AND con.contype = 'p' \
+             ORDER BY u.ordinality",
+            &[&table, &schema],
+        )?;
+        let columns = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+        Ok(columns)
+    }
+
     fn get_foreign_keys(&mut self, table_name: &str) -> Result<Vec<ForeignKeyInfo>, Box<dyn Error>> {
         let (schema, table) = parse_table_name(table_name);
         let rows = self.client.query(

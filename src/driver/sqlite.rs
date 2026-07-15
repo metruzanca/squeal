@@ -180,6 +180,25 @@ impl DbDriver for SQLiteDriver {
         Ok(result)
     }
 
+    fn table_primary_keys(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
+        let pks = stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                let is_pk: bool = row.get(5)?;
+                Ok((name, is_pk))
+            })?
+            .collect::<SqliteResult<Vec<(String, bool)>>>()?;
+        let columns: Vec<String> = pks
+            .into_iter()
+            .filter(|(_, is_pk)| *is_pk)
+            .map(|(name, _)| name)
+            .collect();
+        Ok(columns)
+    }
+
     fn get_foreign_keys(&mut self, table_name: &str) -> Result<Vec<ForeignKeyInfo>, Box<dyn Error>> {
         let mut stmt = self
             .conn
