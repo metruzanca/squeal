@@ -5,12 +5,47 @@
 //! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
 //! scrolling both horizontally and vertically within the data panel.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
 use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
 use crate::ui::helpers::cursor_line_col;
+
+const ADJECTIVES: &[&str] = &[
+    "agile", "brave", "bright", "bold", "calm", "clever", "cozy", "crisp",
+    "eager", "fancy", "fresh", "gentle", "golden", "grand", "happy", "jolly",
+    "keen", "lively", "lucky", "merry", "mild", "nimble", "noble", "perky",
+    "plucky", "proud", "quick", "quiet", "rapid", "royal", "sage", "sharp",
+    "sleek", "slick", "smart", "snug", "spicy", "spunky", "steady", "sunny",
+    "swift", "tidy", "vivid", "warm", "wild", "wise", "witty", "zany", "zesty",
+];
+
+const ANIMALS: &[&str] = &[
+    "alpaca", "badger", "bison", "capybara", "cheetah", "cobra", "cougar",
+    "coyote", "crane", "deer", "dingo", "dolphin", "dove", "eagle", "elk",
+    "emu", "falcon", "ferret", "finch", "fox", "gazelle", "gecko", "gibbon",
+    "giraffe", "goose", "hare", "hawk", "heron", "hyena", "iguana", "jaguar",
+    "koala", "lemur", "leopard", "lion", "llama", "lynx", "magpie", "mink",
+    "mongoose", "moose", "newt", "ocelot", "octopus", "osprey", "otter", "owl",
+    "panda", "parrot", "pelican", "penguin", "puma", "quail", "rabbit",
+    "raccoon", "raven", "robin", "salamander", "salmon", "seal", "shark",
+    "sloth", "sparrow", "squirrel", "stork", "swan", "tiger", "toucan",
+    "trout", "turkey", "turtle", "walrus", "weasel", "whale", "wolf",
+    "wolverine", "wombat", "yak", "zebra",
+];
+
+pub fn generate_db_name(seed: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    let hash = hasher.finish();
+    let adj = ADJECTIVES[hash as usize % ADJECTIVES.len()];
+    let animal = ANIMALS[(hash >> 32) as usize % ANIMALS.len()];
+    format!("{}_{}", adj, animal)
+}
 
 /// A single related record fetched for a foreign key value.
 #[derive(Debug, Clone)]
@@ -100,6 +135,7 @@ pub struct App {
     pub query_cursor: usize,
     pub query_edit_mode: bool,
     pub query_scroll: usize,
+    pub query_error: Option<String>,
     pub is_query_view: bool,
     pub rename_mode: bool,
     pub rename_value: String,
@@ -107,6 +143,7 @@ pub struct App {
     pub save_queries: bool,
     pub all_rows: Vec<Vec<String>>,
     pub working_dir: std::path::PathBuf,
+    pub db_name: String,
     pub fuzzy_open: bool,
     pub fuzzy_query: String,
     pub fuzzy_selected: usize,
@@ -226,11 +263,11 @@ impl App {
         }
     }
 
-    pub fn new(mut driver: Box<dyn DbDriver>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(mut driver: Box<dyn DbDriver>, db_name: String) -> Result<Self, Box<dyn std::error::Error>> {
         let tables = driver.list_tables()?;
 
         let working_dir = std::env::current_dir().unwrap_or_default();
-        let queries = Self::load_queries(&working_dir);
+        let queries = Self::load_queries(&working_dir, &db_name);
 
         let mut highlighter = Highlighter::new(themes::one_dark());
         let _ = highlighter.register_language(sql());
@@ -270,14 +307,16 @@ impl App {
             query_cursor: 0,
             query_edit_mode: false,
             query_scroll: 0,
+            query_error: None,
             is_query_view: false,
             rename_mode: false,
             rename_value: String::new(),
             highlighter,
-            save_queries: false,
+            save_queries: true,
             all_rows: Vec::new(),
             column_types: Vec::new(),
             working_dir,
+            db_name,
             fuzzy_open: false,
             fuzzy_query: String::new(),
             fuzzy_selected: 0,
@@ -342,6 +381,7 @@ impl App {
         self.scroll_offset = 0;
         self.close_modal();
         self.close_peak();
+        self.query_error = None;
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
         } else {
@@ -1047,8 +1087,8 @@ impl App {
 
     // Query methods
 
-    fn load_queries(working_dir: &std::path::Path) -> Vec<Query> {
-        let queries_dir = working_dir.join(".squeal").join("queries");
+    fn load_queries(working_dir: &std::path::Path, db_name: &str) -> Vec<Query> {
+        let queries_dir = working_dir.join(".squeal").join(db_name).join("queries");
         let mut queries = Vec::new();
 
         if let Ok(entries) = std::fs::read_dir(&queries_dir) {
@@ -1073,16 +1113,16 @@ impl App {
         queries
     }
 
-    fn save_query_to_disk(working_dir: &std::path::Path, name: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let queries_dir = working_dir.join(".squeal").join("queries");
+    fn save_query_to_disk(working_dir: &std::path::Path, db_name: &str, name: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let queries_dir = working_dir.join(".squeal").join(db_name).join("queries");
         std::fs::create_dir_all(&queries_dir)?;
         let path = queries_dir.join(format!("{}.sql", name));
         std::fs::write(&path, sql)?;
         Ok(())
     }
 
-    fn delete_query_from_disk(working_dir: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let path = working_dir.join(".squeal").join("queries").join(format!("{}.sql", name));
+    fn delete_query_from_disk(working_dir: &std::path::Path, db_name: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let path = working_dir.join(".squeal").join(db_name).join("queries").join(format!("{}.sql", name));
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
@@ -1091,13 +1131,33 @@ impl App {
 
     pub fn run_query(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let sql = self.query_text.trim();
+        self.query_error = None;
         if sql.is_empty() {
             self.headers = Vec::new();
             self.rows = Vec::new();
             return Ok(());
         }
 
-        let (headers, rows) = self.driver.run_query(sql)?;
+        let (headers, rows) = match self.driver.run_query(sql) {
+            Ok(result) => result,
+            Err(e) => {
+                self.query_error = Some(format!("{}", e));
+                self.headers = Vec::new();
+                self.rows = Vec::new();
+                self.has_more_rows = false;
+                self.all_rows = Vec::new();
+                return Ok(());
+            }
+        };
+
+        if headers.first().map(|s| s == "Error").unwrap_or(false) {
+            self.query_error = rows.first().and_then(|r| r.first().cloned());
+            self.headers = Vec::new();
+            self.rows = Vec::new();
+            self.has_more_rows = false;
+            self.all_rows = Vec::new();
+            return Ok(());
+        }
 
         self.headers = headers;
         self.rows = rows;
@@ -1183,7 +1243,7 @@ impl App {
             let idx = self.query_index();
             let name = self.queries[idx].name.clone();
             if self.save_queries {
-                if let Err(e) = Self::save_query_to_disk(&self.working_dir, &name, &self.query_text) {
+                if let Err(e) = Self::save_query_to_disk(&self.working_dir, &self.db_name, &name, &self.query_text) {
                     eprintln!("Failed to save query: {}", e);
                 } else {
                     self.queries[idx].sql = self.query_text.clone();
@@ -1214,8 +1274,8 @@ impl App {
             let new_name = self.rename_value.clone();
             if old_name != new_name && !self.queries.iter().any(|q| q.name == new_name) {
                 if self.save_queries {
-                    let old_path = self.working_dir.join(".squeal").join("queries").join(format!("{}.sql", old_name));
-                    let new_path = self.working_dir.join(".squeal").join("queries").join(format!("{}.sql", new_name));
+                    let old_path = self.working_dir.join(".squeal").join(&self.db_name).join("queries").join(format!("{}.sql", old_name));
+                    let new_path = self.working_dir.join(".squeal").join(&self.db_name).join("queries").join(format!("{}.sql", new_name));
                     if let Err(e) = std::fs::rename(&old_path, &new_path) {
                         eprintln!("Failed to rename query file: {}", e);
                     } else {
@@ -1245,7 +1305,7 @@ impl App {
         };
 
         if self.save_queries {
-            if let Err(e) = Self::save_query_to_disk(&self.working_dir, &name, "") {
+            if let Err(e) = Self::save_query_to_disk(&self.working_dir, &self.db_name, &name, "") {
                 eprintln!("Failed to save query: {}", e);
                 return;
             }
@@ -1277,7 +1337,7 @@ impl App {
         let idx = self.query_index();
         let name = self.queries[idx].name.clone();
         if self.save_queries {
-            if let Err(e) = Self::delete_query_from_disk(&self.working_dir, &name) {
+            if let Err(e) = Self::delete_query_from_disk(&self.working_dir, &self.db_name, &name) {
                 eprintln!("Failed to delete query: {}", e);
             }
         }

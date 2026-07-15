@@ -288,7 +288,22 @@ fn draw_query_view(frame: &mut Frame, area: Rect, app: &mut App) {
     // Results table
     let table_area = query_layout[layout_idx];
     layout_idx += 1;
-    if !app.headers.is_empty() {
+    if let Some(error) = &app.query_error {
+        let block = Block::default()
+            .title("Error")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red));
+        frame.render_widget(block, table_area);
+        let inner = Rect::new(
+            table_area.x + 1,
+            table_area.y + 1,
+            table_area.width.saturating_sub(2),
+            table_area.height.saturating_sub(2),
+        );
+        let paragraph = Paragraph::new(error.as_str())
+            .style(Style::default().fg(Color::Red));
+        frame.render_widget(paragraph, inner);
+    } else if !app.headers.is_empty() {
         let highlight = app.table_focused && !app.query_edit_mode;
         let (needs_h_scroll, page_size) = render_table_with_block(
             frame,

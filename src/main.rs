@@ -29,7 +29,7 @@ mod test_db;
 #[cfg(test)]
 mod app_tests;
 
-use app::{App, FilterMode};
+use app::{App, FilterMode, generate_db_name};
 use config::Config;
 use driver::{sqlite::SQLiteDriver, postgres::PostgresDriver};
 use startup::run_startup;
@@ -98,8 +98,11 @@ fn run_with_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>, cli: &Cl
 fn build_demo_app() -> App {
     let conn = test_db::TestDb::in_memory_demo();
     let driver = SQLiteDriver::from_connection(conn);
-    match App::new(Box::new(driver)) {
-        Ok(app) => app,
+    match App::new(Box::new(driver), "demo".to_string()) {
+        Ok(mut app) => {
+            app.save_queries = false;
+            app
+        }
         Err(e) => {
             eprintln!("Error creating demo database: {}", e);
             std::process::exit(1);
@@ -118,7 +121,8 @@ fn build_app_from_path(path: &str) -> Result<App, String> {
             .map_err(|e| format!("Error opening SQLite database: {}", e))?
     };
 
-    App::new(driver).map_err(|e| format!("Error opening database: {}", e))
+    let db_name = generate_db_name(path);
+    App::new(driver, db_name).map_err(|e| format!("Error opening database: {}", e))
 }
 
 fn save_recent(path: &str) {

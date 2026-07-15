@@ -2,6 +2,7 @@
 mod tests {
     use crate::app::App;
     use crate::app::FilterMode;
+    use crate::app::generate_db_name;
     use crate::driver::sqlite::SQLiteDriver;
     use crate::driver::FilterOp;
     use crate::test_db;
@@ -19,7 +20,7 @@ mod tests {
     fn test_app_navigation() {
         let path = "/tmp/squeal_test_nav.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         assert_eq!(app.selected_sidebar, 0);
         assert_eq!(app.tables[0].name, "products");
 
@@ -42,7 +43,7 @@ mod tests {
     fn test_focus_and_unfocus() {
         let path = "/tmp/squeal_test_focus.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         assert!(!app.table_focused);
         assert_eq!(app.table_state.selected(), None);
 
@@ -77,7 +78,7 @@ mod tests {
     fn test_navigation_blocked_when_focused() {
         let path = "/tmp/squeal_test_nav_block.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         assert!(app.table_focused);
         assert_eq!(app.selected_sidebar, 0);
@@ -92,7 +93,7 @@ mod tests {
     fn test_fetch_more_rows() {
         let path = "/tmp/squeal_test_fetch_more.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         assert_eq!(app.rows.len(), 100);
         assert!(app.has_more_rows);
 
@@ -114,7 +115,7 @@ mod tests {
     fn test_scroll_table_down_fetches_more() {
         let path = "/tmp/squeal_test_scroll_fetch.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
 
         // Scroll to bottom of first batch
@@ -161,7 +162,7 @@ mod tests {
     fn test_small_table_no_fetch() {
         let path = "/tmp/squeal_test_small_no_fetch.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
 
         // products has 2 rows, so has_more_rows should be false
@@ -178,7 +179,7 @@ mod tests {
     fn test_page_down_scrolls_view_and_preserves_visual_position() {
         let path = "/tmp/squeal_test_page_down.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -196,7 +197,7 @@ mod tests {
     fn test_page_up_preserves_visual_position() {
         let path = "/tmp/squeal_test_page_up.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 50;
@@ -212,7 +213,7 @@ mod tests {
         // 15 rows with page_size=10: pages 0-9, 10-14
         let path = "/tmp/squeal_test_page_down_clamp.db";
         test_db::TestDb::large(path, 15);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 0;
@@ -227,7 +228,7 @@ mod tests {
     fn test_page_up_at_top_is_noop() {
         let path = "/tmp/squeal_test_page_up_clamp.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
         app.scroll_offset = 0;
@@ -242,7 +243,7 @@ mod tests {
     fn test_page_down_to_last_page_preserves_visual_position() {
         let path = "/tmp/squeal_test_small_final.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -261,7 +262,7 @@ mod tests {
     fn test_page_up_from_last_page_preserves_visual_position() {
         let path = "/tmp/squeal_test_up_from_bottom.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -285,7 +286,7 @@ mod tests {
     fn test_page_down_from_last_page_is_noop() {
         let path = "/tmp/squeal_test_page_down_noop.db";
         test_db::TestDb::large(path, 25);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -301,7 +302,7 @@ mod tests {
         // 15 rows with page_size=10: pages 0-9, 10-14
         let path = "/tmp/squeal_test_up_from_partial.db";
         test_db::TestDb::large(path, 15);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -316,7 +317,7 @@ mod tests {
     fn test_scroll_table_down_keeps_cursor_visible() {
         let path = "/tmp/squeal_test_cursor_vis.db";
         test_db::TestDb::large(path, 250);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.page_size = 10;
 
@@ -331,7 +332,7 @@ mod tests {
     #[test]
     fn test_open_modal_fetches_fk_records() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn)), "test".to_string()).unwrap();
         // Navigate to orders table (should be index 2 after sorting: categories, orders, products, users)
         app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
@@ -368,7 +369,7 @@ mod tests {
     #[test]
     fn test_close_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn)), "test".to_string()).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -384,7 +385,7 @@ mod tests {
     #[test]
     fn test_unfocus_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn)), "test".to_string()).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -399,7 +400,7 @@ mod tests {
     #[test]
     fn test_load_table_closes_modal() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn)), "test".to_string()).unwrap();
         app.selected_sidebar = app.tables.iter().position(|t| t.name == "orders").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
         app.focus_table();
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn test_open_modal_no_fks() {
         let conn = test_db::TestDb::in_memory_demo();
-        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn))).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::from_connection(conn)), "test".to_string()).unwrap();
         // users table has no foreign keys - should show row details instead
         app.selected_sidebar = app.tables.iter().position(|t| t.name == "users").unwrap();
         app.load_table(app.selected_sidebar).unwrap();
@@ -434,7 +435,7 @@ mod tests {
     fn test_filter_mode_toggle() {
         let path = "/tmp/squeal_test_filter_toggle.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
 
         // Cannot toggle when not focused
         app.toggle_filter_mode();
@@ -453,7 +454,7 @@ mod tests {
     fn test_filter_mode_blocked_when_not_focused() {
         let path = "/tmp/squeal_test_filter_block.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         assert!(!app.table_focused);
 
         app.move_filter_col_right();
@@ -466,7 +467,7 @@ mod tests {
     fn test_cycle_sort_order() {
         let path = "/tmp/squeal_test_sort.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
 
@@ -501,7 +502,7 @@ mod tests {
     fn test_filter_input() {
         let path = "/tmp/squeal_test_filter_input.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.enter_filter_for_col();
@@ -525,7 +526,7 @@ mod tests {
     fn test_filter_navigation() {
         let path = "/tmp/squeal_test_filter_nav.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
 
@@ -551,7 +552,7 @@ mod tests {
     fn test_filter_applies_and_sorts() {
         let path = "/tmp/squeal_test_filter_apply.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -570,7 +571,7 @@ mod tests {
     fn test_filter_empty_returns_all() {
         let path = "/tmp/squeal_test_filter_empty.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.apply_filters_and_sort().unwrap();
@@ -582,7 +583,7 @@ mod tests {
     fn test_sort_ascending() {
         let path = "/tmp/squeal_test_sort_asc.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // select title column
@@ -598,7 +599,7 @@ mod tests {
     fn test_sort_descending() {
         let path = "/tmp/squeal_test_sort_desc.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // select title column
@@ -615,7 +616,7 @@ mod tests {
     fn test_filter_and_sort_combined() {
         let path = "/tmp/squeal_test_filter_sort.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -643,7 +644,7 @@ mod tests {
     fn test_filter_case_insensitive() {
         let path = "/tmp/squeal_test_filter_ci.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // move to title column
@@ -661,7 +662,7 @@ mod tests {
     fn test_unfocus_clears_filter_mode() {
         let path = "/tmp/squeal_test_unfocus_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         assert_eq!(app.filter_mode, FilterMode::HeaderSelect);
@@ -675,7 +676,7 @@ mod tests {
     fn test_filter_on_multiple_columns() {
         let path = "/tmp/squeal_test_filter_multi.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.enter_filter_for_col(); // filter on id column
@@ -703,7 +704,7 @@ mod tests {
     fn test_filter_equals() {
         let path = "/tmp/squeal_test_filter_equals.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -727,7 +728,7 @@ mod tests {
     fn test_clear_filter() {
         let path = "/tmp/squeal_test_clear_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -747,7 +748,7 @@ mod tests {
     fn test_delete_current_filter() {
         let path = "/tmp/squeal_test_delete_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
@@ -774,7 +775,7 @@ mod tests {
     fn test_edit_existing_filter() {
         let path = "/tmp/squeal_test_edit_filter.db";
         test_db::TestDb::simple(path);
-        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap())).unwrap();
+        let mut app = App::new(Box::new(SQLiteDriver::new(path).unwrap()), generate_db_name(path)).unwrap();
         app.focus_table();
         app.toggle_filter_mode();
         app.move_filter_col_right(); // title column
