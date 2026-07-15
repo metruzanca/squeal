@@ -16,7 +16,9 @@ A lightweight TUI database viewer for SQLite and PostgreSQL, built in Rust.
 - **Column filtering** — type-aware operators: exact match, substring, numeric comparisons
 - **Column sorting** — sort any column ascending or descending
 - **Foreign key record view** — press `Enter` on a row to view related records from referenced tables
-- **Custom queries** — write, save, and browse ad-hoc SQL queries
+- **Fuzzy finder** — press `Ctrl+P` to quickly jump to any table or saved query
+- **Peak view** — press `Space` on a row to see full column values with type and key metadata
+- **Query persistence** — saved queries survive restarts, isolated per database connection
 - **Auto-refresh** — table data refreshes every 5 seconds (manual refresh with `r`)
 - **Help overlay** — press `?` anytime to see all available keybindings
 

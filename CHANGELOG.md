@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-15
+
+### Added
+
+- Fuzzy finder — press `Ctrl+P` / `Ctrl+K` to jump to any table or saved query.
+- Peak view — press `Space` on a focused row to see full column values with type, primary key, and foreign key metadata.
+- Schema groups in sidebar with expand/collapse for PostgreSQL schemas.
+- Random adjective-animal names for database connections (e.g. `brave_penguin`, `quick_fox`), deterministically derived from the connection string.
+- Query errors now display the actual database error message (red "Error" block in results) instead of a generic table view.
+- Queries are persisted to disk by default in `.squeal/<db_name>/queries/` and survive application restarts.
+
+### Fixed
+
+- Recent database entries store absolute paths for reliable reopening from any directory.
+- Demo mode (`--demo`) no longer attempts to persist queries to disk.
+- Saved queries are now isolated per database, preventing query leakage between different connections.
+
+### Changed
+
+- Queries directory structure changed from `.squeal/queries/` to `.squeal/<db_name>/queries/`.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added
@@ -41,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Help overlay — press `?` to see all available keybindings.
 - `cargo binstall` support via prebuilt GitHub release binaries.
 
-[Unreleased]: https://github.com/metruzanca/squeal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/metruzanca/squeal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/metruzanca/squeal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/metruzanca/squeal/releases/tag/v0.2.0
 [0.1.0]: https://github.com/metruzanca/squeal/releases/tag/v0.1.0
