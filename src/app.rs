@@ -5,47 +5,13 @@
 //! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
 //! scrolling both horizontally and vertically within the data panel.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
 
+pub use crate::config::generate_db_name;
 use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
 use crate::ui::helpers::cursor_line_col;
-
-const ADJECTIVES: &[&str] = &[
-    "agile", "brave", "bright", "bold", "calm", "clever", "cozy", "crisp",
-    "eager", "fancy", "fresh", "gentle", "golden", "grand", "happy", "jolly",
-    "keen", "lively", "lucky", "merry", "mild", "nimble", "noble", "perky",
-    "plucky", "proud", "quick", "quiet", "rapid", "royal", "sage", "sharp",
-    "sleek", "slick", "smart", "snug", "spicy", "spunky", "steady", "sunny",
-    "swift", "tidy", "vivid", "warm", "wild", "wise", "witty", "zany", "zesty",
-];
-
-const ANIMALS: &[&str] = &[
-    "alpaca", "badger", "bison", "capybara", "cheetah", "cobra", "cougar",
-    "coyote", "crane", "deer", "dingo", "dolphin", "dove", "eagle", "elk",
-    "emu", "falcon", "ferret", "finch", "fox", "gazelle", "gecko", "gibbon",
-    "giraffe", "goose", "hare", "hawk", "heron", "hyena", "iguana", "jaguar",
-    "koala", "lemur", "leopard", "lion", "llama", "lynx", "magpie", "mink",
-    "mongoose", "moose", "newt", "ocelot", "octopus", "osprey", "otter", "owl",
-    "panda", "parrot", "pelican", "penguin", "puma", "quail", "rabbit",
-    "raccoon", "raven", "robin", "salamander", "salmon", "seal", "shark",
-    "sloth", "sparrow", "squirrel", "stork", "swan", "tiger", "toucan",
-    "trout", "turkey", "turtle", "walrus", "weasel", "whale", "wolf",
-    "wolverine", "wombat", "yak", "zebra",
-];
-
-pub fn generate_db_name(seed: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    seed.hash(&mut hasher);
-    let hash = hasher.finish();
-    let adj = ADJECTIVES[hash as usize % ADJECTIVES.len()];
-    let animal = ANIMALS[(hash >> 32) as usize % ANIMALS.len()];
-    format!("{}_{}", adj, animal)
-}
 
 /// A single related record fetched for a foreign key value.
 #[derive(Debug, Clone)]
