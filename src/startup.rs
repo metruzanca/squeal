@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 
-use crate::config::{Config, RecentEntry};
+use crate::config::{censor_connection_string, Config, RecentEntry};
 
 pub struct StartupScreen {
     pub entries: Vec<RecentEntry>,
@@ -166,7 +166,7 @@ impl StartupScreen {
                 let spans = vec![
                     Span::styled(badge_padded, badge_style),
                     Span::raw("  "),
-                    Span::styled(&entry.path, style),
+                    Span::styled(censor_connection_string(&entry.path), style),
                 ];
                 lines.push(Line::from(spans));
             }

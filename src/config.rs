@@ -2,6 +2,23 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub fn censor_connection_string(path: &str) -> String {
+    if !path.starts_with("postgres://") && !path.starts_with("postgresql://") {
+        return path.to_string();
+    }
+    let after_scheme = path.find("://").map(|i| i + 3).unwrap_or(0);
+    let rest = &path[after_scheme..];
+    if let Some(at_pos) = rest.find('@') {
+        let userinfo = &rest[..at_pos];
+        if let Some(colon_pos) = userinfo.find(':') {
+            let user = &userinfo[..colon_pos];
+            let censored = format!("{}:****", user);
+            return format!("{}{}{}", &path[..after_scheme], censored, &rest[at_pos..]);
+        }
+    }
+    path.to_string()
+}
+
 pub fn absolutize_path(path: &str) -> String {
     if path.starts_with("postgres://") || path.starts_with("postgresql://") {
         return path.to_string();
