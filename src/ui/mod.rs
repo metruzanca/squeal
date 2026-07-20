@@ -535,6 +535,8 @@ fn draw_help_modal(frame: &mut Frame) {
     help_lines.push(Line::from("  Tab        : Edit SQL"));
     help_lines.push(Line::from("  Esc        : Back to sidebar"));
     help_lines.push(Line::from("  r          : Rename query"));
+    help_lines.push(Line::from("  Space      : Peak Row"));
+    help_lines.push(Line::from("  Enter      : Open Details"));
     help_lines.push(Line::from("  /          : Filter mode"));
     help_lines.push(Line::from("  j / Down   : Scroll results down"));
     help_lines.push(Line::from("  k / Up     : Scroll results up"));
@@ -936,10 +938,14 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
                     Span::styled(": Views   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Tab"),
                     Span::styled(": SQL   ", Style::default().fg(Color::DarkGray)),
-                    Span::raw("r"),
-                    Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("j/k"),
+                    Span::styled(": Scroll   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("Enter"),
+                    Span::styled(": Details   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Space"),
                     Span::styled(": Peak   ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("r"),
+                    Span::styled(": Rename   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("/"),
                     Span::styled(": Filter   ", Style::default().fg(Color::DarkGray)),
                     Span::raw("Ctrl+P"),
@@ -968,16 +974,17 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
         let mut binds = vec![
             Span::raw(" q"),
             Span::styled(": Quit   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("j/k"),
+            Span::styled(": Navigate   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Tab"),
             Span::styled(": View   ", Style::default().fg(Color::DarkGray)),
+            Span::raw("n"),
+            Span::styled(": New   ", Style::default().fg(Color::DarkGray)),
             Span::raw("Ctrl+P"),
             Span::styled(": Find   ", Style::default().fg(Color::DarkGray)),
-
         ];
         if app.current_is_query() {
             binds.extend(vec![
-                Span::raw(" n"),
-                Span::styled(": New   ", Style::default().fg(Color::DarkGray)),
                 Span::raw("D"),
                 Span::styled(": Del", Style::default().fg(Color::DarkGray)),
             ]);
