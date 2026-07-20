@@ -25,16 +25,19 @@ mod tests {
         assert_eq!(app.tables[0].name, "products");
 
         app.next();
+        app.process_sidebar_load().unwrap();
         assert_eq!(app.selected_sidebar, 1);
         assert_eq!(app.tables[1].name, "users");
         assert_eq!(app.headers, vec!["id", "name", "email"]);
         assert_eq!(app.rows.len(), 3);
 
         app.next();
+        app.process_sidebar_load().unwrap();
         assert_eq!(app.selected_sidebar, 0);
         assert_eq!(app.tables[0].name, "products");
 
         app.previous();
+        app.process_sidebar_load().unwrap();
         assert_eq!(app.selected_sidebar, 1);
         assert_eq!(app.tables[1].name, "users");
     }

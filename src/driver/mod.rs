@@ -56,7 +56,7 @@ pub struct ForeignKeyInfo {
     pub to: String,
 }
 
-pub trait DbDriver {
+pub trait DbDriver: Send {
     fn list_tables(&mut self) -> Result<Vec<TableInfo>, Box<dyn Error>>;
     fn table_columns(&mut self, table_name: &str) -> Result<Vec<String>, Box<dyn Error>>;
     fn table_column_types(&mut self, table_name: &str) -> Result<Vec<ColumnType>, Box<dyn Error>>;

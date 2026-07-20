@@ -5,6 +5,11 @@
 //! encapsulates the operations for switching tables, focusing/unfocusing the table view, and
 //! scrolling both horizontally and vertically within the data panel.
 
+use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Instant;
+
 use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::TableState;
 use tui_syntax::{Highlighter, themes, sql};
@@ -12,6 +17,35 @@ use tui_syntax::{Highlighter, themes, sql};
 pub use crate::config::generate_db_name;
 use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
 use crate::ui::helpers::cursor_line_col;
+
+#[derive(Debug)]
+pub enum BgRequest {
+    LoadTable {
+        index: usize,
+        table_ident: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum BgResult {
+    TableLoaded {
+        index: usize,
+        headers: Vec<String>,
+        column_types: Vec<ColumnType>,
+        rows: Vec<Vec<String>>,
+        has_more_rows: bool,
+    },
+    Error(String),
+}
+
+/// Cached first page of a table for fast sidebar navigation.
+#[derive(Debug, Clone)]
+pub struct CachedTable {
+    pub headers: Vec<String>,
+    pub column_types: Vec<ColumnType>,
+    pub rows: Vec<Vec<String>>,
+    pub has_more_rows: bool,
+}
 
 /// A single related record fetched for a foreign key value.
 #[derive(Debug, Clone)]
@@ -122,6 +156,14 @@ pub struct App {
     pub peak_column_types: Vec<ColumnType>,
     pub peak_primary_keys: Vec<String>,
     pub peak_foreign_keys: Vec<ForeignKeyInfo>,
+    pub sidebar_needs_load: bool,
+    pub cached_pages: HashMap<usize, CachedTable>,
+    pub table_switch_time: Instant,
+    pub bg_tx: Option<mpsc::Sender<BgRequest>>,
+    pub bg_rx: Option<mpsc::Receiver<BgResult>>,
+    #[allow(dead_code)]
+    bg_handle: Option<JoinHandle<()>>,
+    pub is_loading: bool,
 }
 
 impl App {
@@ -295,6 +337,13 @@ impl App {
             peak_column_types: Vec::new(),
             peak_primary_keys: Vec::new(),
             peak_foreign_keys: Vec::new(),
+            sidebar_needs_load: false,
+            cached_pages: HashMap::new(),
+            table_switch_time: Instant::now(),
+            bg_tx: None,
+            bg_rx: None,
+            bg_handle: None,
+            is_loading: false,
         };
 
         app.rebuild_sidebar();
@@ -321,14 +370,42 @@ impl App {
                 }
             }
         }
+
+        // Check cache for instant navigation
+        if let Some(cached) = self.cached_pages.get(&index) {
+            self.headers = cached.headers.clone();
+            self.column_types = cached.column_types.clone();
+            self.rows = cached.rows.clone();
+            self.has_more_rows = cached.has_more_rows;
+            self.filters = vec![None; self.headers.len()];
+            self.filter_mode = FilterMode::None;
+            self.filter_col = 0;
+            self.sort_col = None;
+            self.sort_asc = true;
+            self.temp_filter_op = FilterOp::Equals;
+            self.temp_filter_value = String::new();
+            self.h_scroll = 0;
+            self.scroll_offset = 0;
+            self.close_modal();
+            self.close_peak();
+            self.query_error = None;
+            self.table_switch_time = Instant::now();
+            if self.table_focused && !self.rows.is_empty() {
+                self.table_state = TableState::new().with_selected(Some(0));
+            } else {
+                self.table_state = TableState::new();
+            }
+            return Ok(());
+        }
+
         let table_ident = self.table_ident(index);
 
         let headers = self.driver.table_columns(&table_ident)?;
         let column_types = self.driver.table_column_types(&table_ident)?;
 
         // Set headers and reset filter state before fetching
-        self.headers = headers;
-        self.column_types = column_types;
+        self.headers = headers.clone();
+        self.column_types = column_types.clone();
         self.filters = vec![None; self.headers.len()];
         self.filter_mode = FilterMode::None;
         self.filter_col = 0;
@@ -341,18 +418,31 @@ impl App {
             .driver
             .fetch_rows(&table_ident, &self.headers, &self.filters, None, true, 0, 100)?;
 
-        self.rows = rows;
-        self.has_more_rows = self.rows.len() == 100;
+        let has_more = rows.len() == 100;
+        self.rows = rows.clone();
+        self.has_more_rows = has_more;
         self.h_scroll = 0;
         self.scroll_offset = 0;
         self.close_modal();
         self.close_peak();
         self.query_error = None;
+        self.table_switch_time = Instant::now();
         if self.table_focused && !self.rows.is_empty() {
             self.table_state = TableState::new().with_selected(Some(0));
         } else {
             self.table_state = TableState::new();
         }
+
+        // Populate cache
+        self.cached_pages.insert(
+            index,
+            CachedTable {
+                headers,
+                column_types,
+                rows,
+                has_more_rows: has_more,
+            },
+        );
 
         Ok(())
     }
@@ -396,15 +486,7 @@ impl App {
             next = (next + 1) % len;
         }
         self.selected_sidebar = next;
-        match self.sidebar_entries.get(next) {
-            Some(SidebarEntry::Table(ti)) => {
-                let _ = self.load_table(*ti);
-            }
-            Some(SidebarEntry::Query(qi)) => {
-                let _ = self.load_query(*qi);
-            }
-            _ => {}
-        }
+        self.sidebar_needs_load = true;
     }
 
     pub fn previous(&mut self) {
@@ -429,14 +511,149 @@ impl App {
             }
         }
         self.selected_sidebar = prev;
-        match self.sidebar_entries.get(prev) {
+        self.sidebar_needs_load = true;
+    }
+
+    pub fn process_sidebar_load(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.sidebar_needs_load {
+            return Ok(());
+        }
+        self.sidebar_needs_load = false;
+
+        match self.sidebar_entries.get(self.selected_sidebar) {
             Some(SidebarEntry::Table(ti)) => {
-                let _ = self.load_table(*ti);
+                let index = *ti;
+                let table_ident = self.table_ident(index);
+
+                // Check cache first — instant navigation for recently viewed tables
+                if let Some(cached) = self.cached_pages.get(&index) {
+                    self.headers = cached.headers.clone();
+                    self.column_types = cached.column_types.clone();
+                    self.rows = cached.rows.clone();
+                    self.has_more_rows = cached.has_more_rows;
+                    self.filters = vec![None; self.headers.len()];
+                    self.filter_mode = FilterMode::None;
+                    self.filter_col = 0;
+                    self.sort_col = None;
+                    self.sort_asc = true;
+                    self.temp_filter_op = FilterOp::Equals;
+                    self.temp_filter_value = String::new();
+                    self.h_scroll = 0;
+                    self.scroll_offset = 0;
+                    self.close_modal();
+                    self.close_peak();
+                    self.query_error = None;
+                    self.table_switch_time = Instant::now();
+                    self.is_loading = false;
+                    if self.table_focused && !self.rows.is_empty() {
+                        self.table_state = TableState::new().with_selected(Some(0));
+                    } else {
+                        self.table_state = TableState::new();
+                    }
+                    return Ok(());
+                }
+
+                // Cache miss: clear stale data and show loading state
+                self.headers.clear();
+                self.column_types.clear();
+                self.rows.clear();
+                self.has_more_rows = false;
+                self.filters = Vec::new();
+                self.filter_mode = FilterMode::None;
+                self.filter_col = 0;
+                self.sort_col = None;
+                self.sort_asc = true;
+                self.h_scroll = 0;
+                self.scroll_offset = 0;
+                self.close_modal();
+                self.close_peak();
+                self.query_error = None;
+                self.table_state = TableState::new();
+
+                if let Some(ref tx) = self.bg_tx {
+                    self.is_loading = true;
+                    let _ = tx.send(BgRequest::LoadTable {
+                        index,
+                        table_ident,
+                    });
+                    Ok(())
+                } else {
+                    // No background thread (demo mode, tests) — load synchronously
+                    self.load_table(index)
+                }
             }
-            Some(SidebarEntry::Query(qi)) => {
-                let _ = self.load_query(*qi);
+            Some(SidebarEntry::Query(qi)) => self.load_query(*qi),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn start_background_loader(&mut self, conn_str: String, is_postgres: bool) {
+        let (bg_tx, bg_rx) = mpsc::channel::<BgRequest>();
+        let (res_tx, res_rx) = mpsc::channel::<BgResult>();
+
+        let handle = std::thread::Builder::new()
+            .name("squeal-db-loader".into())
+            .spawn(move || bg_worker(bg_rx, res_tx, conn_str, is_postgres))
+            .expect("failed to spawn background DB thread");
+
+        self.bg_tx = Some(bg_tx);
+        self.bg_rx = Some(res_rx);
+        self.bg_handle = Some(handle);
+    }
+
+    pub fn check_bg_results(&mut self) {
+        // Drain all available results into a local vec to avoid borrow conflicts
+        let mut results = Vec::new();
+        if let Some(ref rx) = self.bg_rx {
+            while let Ok(r) = rx.try_recv() {
+                results.push(r);
             }
-            _ => {}
+        }
+        if results.is_empty() {
+            return;
+        }
+        for result in results {
+            match result {
+                BgResult::TableLoaded { index, headers, column_types, rows, has_more_rows } => {
+                    // Only apply if the user is still on this table
+                    if self.current_table_index() != Some(index) {
+                        continue;
+                    }
+                    self.is_loading = false;
+                    self.headers = headers.clone();
+                    self.column_types = column_types.clone();
+                    self.rows = rows.clone();
+                    self.has_more_rows = has_more_rows;
+                    self.filters = vec![None; self.headers.len()];
+                    self.filter_mode = FilterMode::None;
+                    self.filter_col = 0;
+                    self.sort_col = None;
+                    self.sort_asc = true;
+                    self.h_scroll = 0;
+                    self.scroll_offset = 0;
+                    self.close_modal();
+                    self.close_peak();
+                    self.query_error = None;
+                    if self.table_focused && !self.rows.is_empty() {
+                        self.table_state = TableState::new().with_selected(Some(0));
+                    } else {
+                        self.table_state = TableState::new();
+                    }
+                    // Populate cache
+                    self.cached_pages.insert(
+                        index,
+                        CachedTable {
+                            headers,
+                            column_types,
+                            rows,
+                            has_more_rows,
+                        },
+                    );
+                }
+                BgResult::Error(_err) => {
+                    self.is_loading = false;
+                }
+            }
         }
     }
 
@@ -921,6 +1138,8 @@ impl App {
             return Ok(());
         }
         let ti = self.current_table_index().unwrap_or(self.selected_sidebar);
+        // Invalidate cache so next navigation loads fresh data
+        self.cached_pages.remove(&ti);
         let table_ident = self.table_ident_or_empty(ti);
         let fetch_count = self.rows.len().max(100);
         let new_rows = self.driver.fetch_rows(
@@ -940,6 +1159,10 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub fn can_auto_refresh(&self) -> bool {
+        self.table_switch_time.elapsed() >= std::time::Duration::from_secs(1)
     }
 
     pub fn apply_filters_and_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -1594,6 +1817,73 @@ impl App {
         self.close_fuzzy();
         Ok(())
     }
+}
+
+fn bg_worker(
+    rx: mpsc::Receiver<BgRequest>,
+    tx: mpsc::Sender<BgResult>,
+    conn_str: String,
+    is_postgres: bool,
+) {
+    use crate::driver::postgres::PostgresDriver;
+    use crate::driver::sqlite::SQLiteDriver;
+
+    let mut driver: Box<dyn DbDriver> = if is_postgres {
+        match PostgresDriver::new(&conn_str) {
+            Ok(d) => Box::new(d),
+            Err(e) => {
+                let _ = tx.send(BgResult::Error(format!("Failed to connect: {e}")));
+                return;
+            }
+        }
+    } else {
+        match SQLiteDriver::new(&conn_str) {
+            Ok(d) => Box::new(d),
+            Err(e) => {
+                let _ = tx.send(BgResult::Error(format!("Failed to open: {e}")));
+                return;
+            }
+        }
+    };
+
+    while let Ok(req) = rx.recv() {
+        match req {
+            BgRequest::LoadTable { index, table_ident } => {
+                let result = load_table_bg(&mut *driver, &table_ident);
+                let bg_result = match result {
+                    Ok((headers, column_types, rows)) => {
+                        let has_more_rows = rows.len() == 100;
+                        BgResult::TableLoaded {
+                            index,
+                            headers,
+                            column_types,
+                            rows,
+                            has_more_rows,
+                        }
+                    }
+                    Err(e) => BgResult::Error(e),
+                };
+                if tx.send(bg_result).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn load_table_bg(
+    driver: &mut dyn DbDriver,
+    table_ident: &str,
+) -> Result<(Vec<String>, Vec<ColumnType>, Vec<Vec<String>>), String> {
+    let headers = driver.table_columns(table_ident).map_err(|e| e.to_string())?;
+    let column_types = driver
+        .table_column_types(table_ident)
+        .map_err(|e| e.to_string())?;
+    let fetch_count = 100;
+    let rows = driver
+        .fetch_rows(table_ident, &headers, &[], None, true, 0, fetch_count)
+        .map_err(|e| e.to_string())?;
+    Ok((headers, column_types, rows))
 }
 
 

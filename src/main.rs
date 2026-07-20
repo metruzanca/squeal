@@ -5,7 +5,7 @@
 //! keyboard events to application commands (table selection, focus/unfocus, scrolling, and quit).
 
 use std::io::{self, stdout, Stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -111,7 +111,8 @@ fn build_demo_app() -> App {
 }
 
 fn build_app_from_path(path: &str) -> Result<App, String> {
-    let driver: Box<dyn driver::DbDriver> = if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+    let is_postgres = path.starts_with("postgres://") || path.starts_with("postgresql://");
+    let driver: Box<dyn driver::DbDriver> = if is_postgres {
         PostgresDriver::new(path)
             .map(|d| Box::new(d) as Box<dyn driver::DbDriver>)
             .map_err(|e| format!("Error connecting to PostgreSQL: {}", e))?
@@ -122,7 +123,9 @@ fn build_app_from_path(path: &str) -> Result<App, String> {
     };
 
     let db_name = generate_db_name(path);
-    App::new(driver, db_name).map_err(|e| format!("Error opening database: {}", e))
+    let mut app = App::new(driver, db_name).map_err(|e| format!("Error opening database: {}", e))?;
+    app.start_background_loader(path.to_string(), is_postgres);
+    Ok(app)
 }
 
 fn save_recent(path: &str) {
@@ -152,7 +155,8 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 fn should_auto_refresh(app: &App) -> bool {
     !app.help_open
@@ -167,8 +171,10 @@ fn should_auto_refresh(app: &App) -> bool {
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+    let mut last_auto_refresh = Instant::now();
     loop {
         terminal.draw(|frame| draw(frame, app))?;
+        app.check_bg_results();
 
         if event::poll(REFRESH_INTERVAL)? {
             if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
@@ -333,8 +339,42 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
             } else {
                 match key.code {
                     KeyCode::Tab | KeyCode::Enter => app.focus_table(),
-                    KeyCode::Char('j') | KeyCode::Down => app.next(),
-                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        app.next();
+                        // Drain additional buffered sidebar nav events
+                        while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                            if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
+                                && k.kind == KeyEventKind::Press
+                            {
+                                match k.code {
+                                    KeyCode::Char('j') | KeyCode::Down => app.next(),
+                                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                                    _ => break,
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        let _ = app.process_sidebar_load();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        app.previous();
+                        // Drain additional buffered sidebar nav events
+                        while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                            if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
+                                && k.kind == KeyEventKind::Press
+                            {
+                                match k.code {
+                                    KeyCode::Char('j') | KeyCode::Down => app.next(),
+                                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                                    _ => break,
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        let _ = app.process_sidebar_load();
+                    }
                     KeyCode::Left => {
                         if app.is_on_group_header() {
                             if let Some(gi) = app.current_group_index() {
@@ -365,7 +405,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::
                 }
             }
             }  // end inner Event::Key match
-        } else if should_auto_refresh(app) {
+        } else if should_auto_refresh(app)
+            && app.can_auto_refresh()
+            && last_auto_refresh.elapsed() >= AUTO_REFRESH_INTERVAL
+        {
+            last_auto_refresh = Instant::now();
             let _ = app.refresh_current_table();
         }
     }

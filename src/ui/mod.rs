@@ -115,6 +115,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Right column
     if app.is_query_view {
         draw_query_view(frame, main_layout[1], app);
+    } else if app.is_loading {
+        let paragraph = Paragraph::new(" Loading...")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().title("Data").borders(Borders::ALL));
+        frame.render_widget(paragraph, main_layout[1]);
     } else if !app.headers.is_empty() {
         draw_table_view(frame, main_layout[1], app);
     } else {
