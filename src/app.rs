@@ -524,6 +524,8 @@ impl App {
             Some(SidebarEntry::Table(ti)) => {
                 let index = *ti;
                 let table_ident = self.table_ident(index);
+                self.is_query_view = false;
+                self.query_edit_mode = false;
 
                 // Check cache first — instant navigation for recently viewed tables
                 if let Some(cached) = self.cached_pages.get(&index) {
@@ -620,6 +622,8 @@ impl App {
                         continue;
                     }
                     self.is_loading = false;
+                    self.is_query_view = false;
+                    self.query_edit_mode = false;
                     self.headers = headers.clone();
                     self.column_types = column_types.clone();
                     self.rows = rows.clone();
@@ -634,6 +638,9 @@ impl App {
                     self.close_modal();
                     self.close_peak();
                     self.query_error = None;
+                    self.temp_filter_op = FilterOp::Equals;
+                    self.temp_filter_value = String::new();
+                    self.table_switch_time = Instant::now();
                     if self.table_focused && !self.rows.is_empty() {
                         self.table_state = TableState::new().with_selected(Some(0));
                     } else {
