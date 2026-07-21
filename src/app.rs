@@ -1893,4 +1893,85 @@ fn load_table_bg(
     Ok((headers, column_types, rows))
 }
 
+/// Top-level application state for the main event loop.
+pub enum AppState {
+    Connecting(ConnectingState),
+    Ready(App),
+}
+
+/// Tracks an in-progress database connection attempt on a background thread.
+pub struct ConnectingState {
+    pub path: String,
+    pub db_name: String,
+    pub messages: Vec<String>,
+    pub error: Option<String>,
+    result_rx: mpsc::Receiver<Result<Box<dyn DbDriver>, String>>,
+    status_rx: mpsc::Receiver<String>,
+}
+
+impl ConnectingState {
+    pub fn new(path: String, db_name: String) -> Self {
+        let is_postgres = path.starts_with("postgres://") || path.starts_with("postgresql://");
+        let (status_tx, status_rx) = mpsc::channel::<String>();
+        let (result_tx, result_rx) = mpsc::channel::<Result<Box<dyn DbDriver>, String>>();
+
+        let bg_path = path.clone();
+        let _ = std::thread::Builder::new()
+            .name("squeal-connector".into())
+            .spawn(move || bg_connect_worker(bg_path, is_postgres, status_tx, result_tx));
+
+        ConnectingState {
+            path,
+            db_name,
+            messages: Vec::new(),
+            error: None,
+            result_rx,
+            status_rx,
+        }
+    }
+
+    /// Drain available progress messages and check if the connection completed.
+    /// Returns `Some(Ok(driver))` on success, `Some(Err(msg))` on failure,
+    /// or `None` if still in progress.
+    pub fn poll(&mut self) -> Option<Result<Box<dyn DbDriver>, String>> {
+        while let Ok(msg) = self.status_rx.try_recv() {
+            self.messages.push(msg);
+        }
+        match self.result_rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err("Connection thread terminated unexpectedly".to_string()))
+            }
+        }
+    }
+}
+
+fn bg_connect_worker(
+    path: String,
+    is_postgres: bool,
+    status_tx: mpsc::Sender<String>,
+    result_tx: mpsc::Sender<Result<Box<dyn DbDriver>, String>>,
+) {
+    use crate::driver::postgres;
+    use crate::driver::sqlite::SQLiteDriver;
+
+    let result = if is_postgres {
+        match postgres::connect_with_tls_fallback(&path, Some(&status_tx)) {
+            Ok(client) => {
+                let _ = status_tx.send("Loading database schema…".to_string());
+                Ok(Box::new(postgres::PostgresDriver { client })
+                    as Box<dyn DbDriver>)
+            }
+            Err(e) => Err(format!("PostgreSQL connection failed: {}", e)),
+        }
+    } else {
+        match SQLiteDriver::new(&path) {
+            Ok(d) => Ok(Box::new(d) as Box<dyn DbDriver>),
+            Err(e) => Err(format!("SQLite connection failed: {}", e)),
+        }
+    };
+    let _ = result_tx.send(result);
+}
+
 

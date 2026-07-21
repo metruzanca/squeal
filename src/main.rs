@@ -29,7 +29,7 @@ mod test_db;
 #[cfg(test)]
 mod app_tests;
 
-use app::{App, FilterMode, generate_db_name};
+use app::{App, AppState, ConnectingState, FilterMode, generate_db_name};
 use config::Config;
 use driver::{sqlite::SQLiteDriver, postgres::PostgresDriver};
 use startup::run_startup;
@@ -59,36 +59,53 @@ fn main() -> io::Result<()> {
 
 fn run_with_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>, cli: &Cli) -> io::Result<()> {
     if cli.demo && cli.path.is_some() {
+        restore_terminal(terminal)?;
         eprintln!("Error: cannot use --demo with a database path");
         std::process::exit(1);
     }
 
     if cli.demo {
-        let mut app = build_demo_app();
-        run(terminal, &mut app)
+        let app = build_demo_app();
+        run(terminal, &mut AppState::Ready(app))
     } else if let Some(path) = cli.path.as_deref() {
-        let mut app = match build_app_from_path(path) {
-            Ok(app) => app,
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        };
+        let is_postgres = path.starts_with("postgres://") || path.starts_with("postgresql://");
         save_recent(path);
-        run(terminal, &mut app)
+        if is_postgres {
+            let db_name = generate_db_name(path);
+            let cs = ConnectingState::new(path.to_string(), db_name);
+            run(terminal, &mut AppState::Connecting(cs))
+        } else {
+            let app = match build_app_from_path(path) {
+                Ok(app) => app,
+                Err(e) => {
+                    restore_terminal(terminal)?;
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            };
+            run(terminal, &mut AppState::Ready(app))
+        }
     } else {
         // No arguments: show startup screen
         match run_startup(terminal)? {
             Some(path) => {
-                let mut app = match build_app_from_path(&path) {
-                    Ok(app) => app,
-                    Err(e) => {
-                        restore_terminal(terminal)?;
-                        eprintln!("{}", e);
-                        std::process::exit(1);
-                    }
-                };
-                run(terminal, &mut app)
+                let is_postgres = path.starts_with("postgres://") || path.starts_with("postgresql://");
+                save_recent(&path);
+                if is_postgres {
+                    let db_name = generate_db_name(&path);
+                    let cs = ConnectingState::new(path, db_name);
+                    run(terminal, &mut AppState::Connecting(cs))
+                } else {
+                    let app = match build_app_from_path(&path) {
+                        Ok(app) => app,
+                        Err(e) => {
+                            restore_terminal(terminal)?;
+                            eprintln!("{}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                    run(terminal, &mut AppState::Ready(app))
+                }
             }
             None => Ok(()),
         }
@@ -170,247 +187,284 @@ fn should_auto_refresh(app: &App) -> bool {
         && !app.rename_mode
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut AppState) -> io::Result<()> {
     let mut last_auto_refresh = Instant::now();
     loop {
-        terminal.draw(|frame| draw(frame, app))?;
-        app.check_bg_results();
+        terminal.draw(|frame| draw(frame, state))?;
 
-        if event::poll(REFRESH_INTERVAL)? {
-            if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
-            if app.fuzzy_open {
-                match key.code {
-                    KeyCode::Backspace => app.fuzzy_input_backspace(),
-                    KeyCode::Enter => { let _ = app.fuzzy_select(); }
-                    KeyCode::Esc => app.close_fuzzy(),
-                    KeyCode::Down => app.fuzzy_next(),
-                    KeyCode::Up => app.fuzzy_previous(),
-                    KeyCode::Char(c) => app.fuzzy_input_char(c),
-                    _ => {}
-                }
-            } else if key.code == KeyCode::Char('q') {
-                break;
-            } else if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('k'))
-                && key.modifiers.contains(KeyModifiers::CONTROL) {
-                app.toggle_fuzzy();
-            } else if app.help_open {
-                if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
-                    app.close_help();
-                }
-            } else if app.modal_open {
-                match key.code {
-                    KeyCode::Esc => app.close_modal(),
-                    KeyCode::Char('j') | KeyCode::Down => app.modal_scroll_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.modal_scroll_up(),
-                    KeyCode::Char('h') | KeyCode::Left => app.modal_h_scroll_left(),
-                    KeyCode::Char('l') | KeyCode::Right => app.modal_h_scroll_right(),
-                    KeyCode::Enter => app.modal_select_table(),
-                    _ => {}
-                }
-            } else if app.peak_open {
-                match key.code {
-                    KeyCode::Esc => app.close_peak(),
-                    KeyCode::Char('j') | KeyCode::Down => app.peak_scroll_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.peak_scroll_up(),
-                    _ => {}
-                }
-            } else if key.code == KeyCode::Esc {
-                if app.filter_mode != FilterMode::None {
-                    app.cancel_filter_mode();
-                } else if app.query_edit_mode {
-                    app.query_edit_mode = false;
-                    let _ = app.run_query();
-                    app.save_current_query();
-                } else if app.rename_mode {
-                    app.cancel_rename();
-                } else {
-                    app.unfocus_table();
-                }
-            } else if key.code == KeyCode::Char('?') {
-                app.toggle_help();
-            } else if app.table_focused {
-                if app.filter_mode != FilterMode::None {
-                    // Filter mode: shared between query view and regular tables
-                    match app.filter_mode {
-                        FilterMode::HeaderSelect => {
-                            match key.code {
-                                KeyCode::Char('/') => app.cancel_filter_mode(),
-                                KeyCode::Char('h') | KeyCode::Left => app.move_filter_col_left(),
-                                KeyCode::Char('l') | KeyCode::Right => app.move_filter_col_right(),
-                                KeyCode::Char('k') | KeyCode::Up => app.cycle_sort_order(),
-                                KeyCode::Char('j') | KeyCode::Down => app.cycle_sort_order(),
-                                KeyCode::Enter => app.enter_filter_for_col(),
-                                KeyCode::Delete => app.delete_current_filter(),
-                                _ => {}
-                            }
-                        }
-                        FilterMode::TypeSelect => {
-                            match key.code {
-                                KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type_back(),
-                                KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
-                                KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type_back(),
-                                KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
-                                KeyCode::Enter => app.move_to_value_input(),
-                                KeyCode::Esc => app.cancel_filter_mode(),
-                                KeyCode::Delete => app.delete_current_filter(),
-                                _ => {}
-                            }
-                        }
-                        FilterMode::ValueInput => {
-                            match key.code {
-                                KeyCode::Char(c) => app.filter_input_char(c),
-                                KeyCode::Backspace => app.filter_input_backspace(),
-                                KeyCode::Enter => app.apply_filter(),
-                                KeyCode::Esc => app.cancel_filter_mode(),
-                                KeyCode::Delete => app.delete_current_filter(),
-                                _ => {}
-                            }
-                        }
-                        FilterMode::None => unreachable!(),
-                    }
-                } else if app.is_query_view {
-                    if app.rename_mode {
-                        match key.code {
-                            KeyCode::Char(c) => app.rename_value.push(c),
-                            KeyCode::Backspace => { app.rename_value.pop(); }
-                            KeyCode::Enter => app.apply_rename(),
-                            KeyCode::Esc => app.cancel_rename(),
-                            _ => {}
-                        }
-                    } else if app.query_edit_mode {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Tab => {
-                                app.query_edit_mode = false;
-                                let _ = app.run_query();
-                                app.save_current_query();
-                            }
-                            KeyCode::Char(c) => app.insert_query_char(c),
-                            KeyCode::Backspace => app.backspace_query_char(),
-                            KeyCode::Delete => app.delete_query_char(),
-                            KeyCode::Enter => {
-                                if key.modifiers.contains(event::KeyModifiers::CONTROL) {
-                                    let _ = app.run_query();
-                                    app.save_current_query();
-                                } else {
-                                    app.insert_query_char('\n');
+        match state {
+            AppState::Connecting(cs) => {
+                if let Some(result) = cs.poll() {
+                    match result {
+                        Ok(driver) => {
+                            let path = std::mem::take(&mut cs.path);
+                            let db_name = std::mem::take(&mut cs.db_name);
+                            match App::new(driver, db_name) {
+                                Ok(mut app) => {
+                                    let is_postgres =
+                                        path.starts_with("postgres://") || path.starts_with("postgresql://");
+                                    app.start_background_loader(path, is_postgres);
+                                    *state = AppState::Ready(app);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    cs.error = Some(format!("Error loading tables: {}", e));
                                 }
                             }
-                            KeyCode::Left => app.move_query_cursor_left(),
-                            KeyCode::Right => app.move_query_cursor_right(),
-                            KeyCode::Up => app.move_query_cursor_up(),
-                            KeyCode::Down => app.move_query_cursor_down(),
-                            KeyCode::Home => app.move_query_cursor_home(),
-                            KeyCode::End => app.move_query_cursor_end(),
+                        }
+                        Err(e) => {
+                            cs.error = Some(e);
+                        }
+                    }
+                }
+
+                if event::poll(REFRESH_INTERVAL)? {
+                    if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
+                        if key.code == KeyCode::Char('q') {
+                            break;
+                        }
+                    }
+                }
+            }
+            AppState::Ready(app) => {
+                app.check_bg_results();
+
+                if event::poll(REFRESH_INTERVAL)? {
+                    if let Event::Key(key) = event::read()? && key.kind == KeyEventKind::Press {
+                    if app.fuzzy_open {
+                        match key.code {
+                            KeyCode::Backspace => app.fuzzy_input_backspace(),
+                            KeyCode::Enter => { let _ = app.fuzzy_select(); }
+                            KeyCode::Esc => app.close_fuzzy(),
+                            KeyCode::Down => app.fuzzy_next(),
+                            KeyCode::Up => app.fuzzy_previous(),
+                            KeyCode::Char(c) => app.fuzzy_input_char(c),
                             _ => {}
+                        }
+                    } else if key.code == KeyCode::Char('q') {
+                        break;
+                    } else if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('k'))
+                        && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.toggle_fuzzy();
+                    } else if app.help_open {
+                        if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
+                            app.close_help();
+                        }
+                    } else if app.modal_open {
+                        match key.code {
+                            KeyCode::Esc => app.close_modal(),
+                            KeyCode::Char('j') | KeyCode::Down => app.modal_scroll_down(),
+                            KeyCode::Char('k') | KeyCode::Up => app.modal_scroll_up(),
+                            KeyCode::Char('h') | KeyCode::Left => app.modal_h_scroll_left(),
+                            KeyCode::Char('l') | KeyCode::Right => app.modal_h_scroll_right(),
+                            KeyCode::Enter => app.modal_select_table(),
+                            _ => {}
+                        }
+                    } else if app.peak_open {
+                        match key.code {
+                            KeyCode::Esc => app.close_peak(),
+                            KeyCode::Char('j') | KeyCode::Down => app.peak_scroll_down(),
+                            KeyCode::Char('k') | KeyCode::Up => app.peak_scroll_up(),
+                            _ => {}
+                        }
+                    } else if key.code == KeyCode::Esc {
+                        if app.filter_mode != FilterMode::None {
+                            app.cancel_filter_mode();
+                        } else if app.query_edit_mode {
+                            app.query_edit_mode = false;
+                            let _ = app.run_query();
+                            app.save_current_query();
+                        } else if app.rename_mode {
+                            app.cancel_rename();
+                        } else {
+                            app.unfocus_table();
+                        }
+                    } else if key.code == KeyCode::Char('?') {
+                        app.toggle_help();
+                    } else if app.table_focused {
+                        if app.filter_mode != FilterMode::None {
+                            match app.filter_mode {
+                                FilterMode::HeaderSelect => {
+                                    match key.code {
+                                        KeyCode::Char('/') => app.cancel_filter_mode(),
+                                        KeyCode::Char('h') | KeyCode::Left => app.move_filter_col_left(),
+                                        KeyCode::Char('l') | KeyCode::Right => app.move_filter_col_right(),
+                                        KeyCode::Char('k') | KeyCode::Up => app.cycle_sort_order(),
+                                        KeyCode::Char('j') | KeyCode::Down => app.cycle_sort_order(),
+                                        KeyCode::Enter => app.enter_filter_for_col(),
+                                        KeyCode::Delete => app.delete_current_filter(),
+                                        _ => {}
+                                    }
+                                }
+                                FilterMode::TypeSelect => {
+                                    match key.code {
+                                        KeyCode::Char('h') | KeyCode::Left => app.toggle_filter_type_back(),
+                                        KeyCode::Char('l') | KeyCode::Right => app.toggle_filter_type(),
+                                        KeyCode::Char('j') | KeyCode::Down => app.toggle_filter_type_back(),
+                                        KeyCode::Char('k') | KeyCode::Up => app.toggle_filter_type(),
+                                        KeyCode::Enter => app.move_to_value_input(),
+                                        KeyCode::Esc => app.cancel_filter_mode(),
+                                        KeyCode::Delete => app.delete_current_filter(),
+                                        _ => {}
+                                    }
+                                }
+                                FilterMode::ValueInput => {
+                                    match key.code {
+                                        KeyCode::Char(c) => app.filter_input_char(c),
+                                        KeyCode::Backspace => app.filter_input_backspace(),
+                                        KeyCode::Enter => app.apply_filter(),
+                                        KeyCode::Esc => app.cancel_filter_mode(),
+                                        KeyCode::Delete => app.delete_current_filter(),
+                                        _ => {}
+                                    }
+                                }
+                                FilterMode::None => unreachable!(),
+                            }
+                        } else if app.is_query_view {
+                            if app.rename_mode {
+                                match key.code {
+                                    KeyCode::Char(c) => app.rename_value.push(c),
+                                    KeyCode::Backspace => { app.rename_value.pop(); }
+                                    KeyCode::Enter => app.apply_rename(),
+                                    KeyCode::Esc => app.cancel_rename(),
+                                    _ => {}
+                                }
+                            } else if app.query_edit_mode {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Tab => {
+                                        app.query_edit_mode = false;
+                                        let _ = app.run_query();
+                                        app.save_current_query();
+                                    }
+                                    KeyCode::Char(c) => app.insert_query_char(c),
+                                    KeyCode::Backspace => app.backspace_query_char(),
+                                    KeyCode::Delete => app.delete_query_char(),
+                                    KeyCode::Enter => {
+                                        if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                                            let _ = app.run_query();
+                                            app.save_current_query();
+                                        } else {
+                                            app.insert_query_char('\n');
+                                        }
+                                    }
+                                    KeyCode::Left => app.move_query_cursor_left(),
+                                    KeyCode::Right => app.move_query_cursor_right(),
+                                    KeyCode::Up => app.move_query_cursor_up(),
+                                    KeyCode::Down => app.move_query_cursor_down(),
+                                    KeyCode::Home => app.move_query_cursor_home(),
+                                    KeyCode::End => app.move_query_cursor_end(),
+                                    _ => {}
+                                }
+                            } else {
+                                match key.code {
+                                    KeyCode::Char('/') => app.toggle_filter_mode(),
+                                    KeyCode::Char('r') => app.start_rename(),
+                                    KeyCode::Tab => app.query_edit_mode = true,
+                                    KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
+                                    KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
+                                    KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
+                                    KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
+                                    KeyCode::PageDown => app.page_down(),
+                                    KeyCode::PageUp => app.page_up(),
+                                    KeyCode::Enter => { let _ = app.open_modal(); }
+                                    KeyCode::Char(' ') => app.open_peak(),
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            // Regular table view
+                            match key.code {
+                                KeyCode::Char('/') => app.toggle_filter_mode(),
+                                KeyCode::Tab => app.unfocus_table(),
+                                KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
+                                KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
+                                KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
+                                KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
+                                KeyCode::PageDown => app.page_down(),
+                                KeyCode::PageUp => app.page_up(),
+                                KeyCode::Enter => { let _ = app.open_modal(); }
+                                KeyCode::Char(' ') => app.open_peak(),
+                                KeyCode::Char('r') => { let _ = app.refresh_current_table(); }
+                                _ => {}
+                            }
                         }
                     } else {
                         match key.code {
-                            KeyCode::Char('/') => app.toggle_filter_mode(),
-                            KeyCode::Char('r') => app.start_rename(),
-                            KeyCode::Tab => app.query_edit_mode = true,
-                            KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
-                            KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
-                            KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
-                            KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
-                            KeyCode::PageDown => app.page_down(),
-                            KeyCode::PageUp => app.page_up(),
-                            KeyCode::Enter => { let _ = app.open_modal(); }
-                            KeyCode::Char(' ') => app.open_peak(),
+                            KeyCode::Tab | KeyCode::Enter => app.focus_table(),
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                app.next();
+                                // Drain additional buffered sidebar nav events
+                                while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                                    if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
+                                        && k.kind == KeyEventKind::Press
+                                    {
+                                        match k.code {
+                                            KeyCode::Char('j') | KeyCode::Down => app.next(),
+                                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                                            _ => break,
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                let _ = app.process_sidebar_load();
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                app.previous();
+                                // Drain additional buffered sidebar nav events
+                                while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                                    if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
+                                        && k.kind == KeyEventKind::Press
+                                    {
+                                        match k.code {
+                                            KeyCode::Char('j') | KeyCode::Down => app.next(),
+                                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                                            _ => break,
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                let _ = app.process_sidebar_load();
+                            }
+                            KeyCode::Left => {
+                                if app.is_on_group_header() {
+                                    if let Some(gi) = app.current_group_index() {
+                                        // Only collapse if currently expanded
+                                        if app.groups.get(gi).is_some_and(|g| g.expanded) {
+                                            app.toggle_group(gi);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Right => {
+                                if app.is_on_group_header() {
+                                    if let Some(gi) = app.current_group_index() {
+                                        // Only expand if currently collapsed
+                                        if app.groups.get(gi).is_some_and(|g| !g.expanded) {
+                                            app.toggle_group(gi);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('n') => {
+                                app.create_new_query();
+                            }
+                            KeyCode::Char('D') => {
+                                app.delete_current_query();
+                            }
                             _ => {}
                         }
                     }
-                } else {
-                    // Regular table view
-                    match key.code {
-                        KeyCode::Char('/') => app.toggle_filter_mode(),
-                        KeyCode::Tab => app.unfocus_table(),
-                        KeyCode::Char('j') | KeyCode::Down => app.scroll_table_down(),
-                        KeyCode::Char('k') | KeyCode::Up => app.scroll_table_up(),
-                        KeyCode::Char('h') | KeyCode::Left => app.h_scroll_left(),
-                        KeyCode::Char('l') | KeyCode::Right => app.h_scroll_right(),
-                        KeyCode::PageDown => app.page_down(),
-                        KeyCode::PageUp => app.page_up(),
-                        KeyCode::Enter => { let _ = app.open_modal(); }
-                        KeyCode::Char(' ') => app.open_peak(),
-                        KeyCode::Char('r') => { let _ = app.refresh_current_table(); }
-                        _ => {}
-                    }
-                }
-            } else {
-                match key.code {
-                    KeyCode::Tab | KeyCode::Enter => app.focus_table(),
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.next();
-                        // Drain additional buffered sidebar nav events
-                        while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                            if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
-                                && k.kind == KeyEventKind::Press
-                            {
-                                match k.code {
-                                    KeyCode::Char('j') | KeyCode::Down => app.next(),
-                                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                                    _ => break,
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        let _ = app.process_sidebar_load();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.previous();
-                        // Drain additional buffered sidebar nav events
-                        while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                            if let Event::Key(k) = event::read().unwrap_or(Event::Key(KeyCode::Null.into()))
-                                && k.kind == KeyEventKind::Press
-                            {
-                                match k.code {
-                                    KeyCode::Char('j') | KeyCode::Down => app.next(),
-                                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                                    _ => break,
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        let _ = app.process_sidebar_load();
-                    }
-                    KeyCode::Left => {
-                        if app.is_on_group_header() {
-                            if let Some(gi) = app.current_group_index() {
-                                // Only collapse if currently expanded
-                                if app.groups.get(gi).is_some_and(|g| g.expanded) {
-                                    app.toggle_group(gi);
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Right => {
-                        if app.is_on_group_header() {
-                            if let Some(gi) = app.current_group_index() {
-                                // Only expand if currently collapsed
-                                if app.groups.get(gi).is_some_and(|g| !g.expanded) {
-                                    app.toggle_group(gi);
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char('n') => {
-                        app.create_new_query();
-                    }
-                    KeyCode::Char('D') => {
-                        app.delete_current_query();
-                    }
-                    _ => {}
+                    }  // end inner Event::Key match
+                } else if should_auto_refresh(app)
+                    && app.can_auto_refresh()
+                    && last_auto_refresh.elapsed() >= AUTO_REFRESH_INTERVAL
+                {
+                    last_auto_refresh = Instant::now();
+                    let _ = app.refresh_current_table();
                 }
             }
-            }  // end inner Event::Key match
-        } else if should_auto_refresh(app)
-            && app.can_auto_refresh()
-            && last_auto_refresh.elapsed() >= AUTO_REFRESH_INTERVAL
-        {
-            last_auto_refresh = Instant::now();
-            let _ = app.refresh_current_table();
         }
     }
     Ok(())

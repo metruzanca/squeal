@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, FilterMode, FuzzyKind, SidebarEntry};
+use crate::app::{App, AppState, ConnectingState, FilterMode, FuzzyKind, SidebarEntry};
 
 pub mod filters;
 pub mod helpers;
@@ -22,7 +22,14 @@ use table::{
     visible_column_range,
 };
 
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub fn draw(frame: &mut Frame, state: &mut AppState) {
+    match state {
+        AppState::Connecting(cs) => draw_connecting_modal(frame, cs),
+        AppState::Ready(app) => draw_ready(frame, app),
+    }
+}
+
+fn draw_ready(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1), Constraint::Length(1)])
@@ -996,4 +1003,109 @@ fn build_keybinds(app: &App) -> Vec<Span<'_>> {
         }
         binds
     }
+}
+
+fn draw_connecting_modal(frame: &mut Frame, cs: &ConnectingState) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if cs.error.is_some() {
+        " Connection Failed "
+    } else {
+        " Connecting to Database "
+    };
+    let border_style = if cs.error.is_some() {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    frame.render_widget(block, area);
+
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+
+    // Find which message is still in progress (last one without ✓/⚠/✗ prefix)
+    let in_progress_idx = cs
+        .messages
+        .iter()
+        .rposition(|m| {
+            !m.starts_with('✓') && !m.starts_with('⚠') && !m.starts_with('✗')
+        });
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    let display_count = (inner.height as usize).saturating_sub(4).min(cs.messages.len());
+    let start = cs.messages.len().saturating_sub(display_count);
+    for (i, msg) in cs.messages[start..].iter().enumerate() {
+        let abs_i = start + i;
+        let is_active = Some(abs_i) == in_progress_idx;
+        let prefix = if is_active {
+            "  "
+        } else if msg.starts_with('✓') {
+            "  "
+        } else if msg.starts_with('⚠') {
+            "  "
+        } else {
+            "✓ "
+        };
+        let display = if is_active {
+            msg.clone()
+        } else {
+            let cleaned = msg
+                .strip_prefix("✓ ")
+                .or_else(|| msg.strip_prefix("⚠ "))
+                .unwrap_or(msg);
+            format!("{}{}", prefix, cleaned)
+        };
+
+        let style = if cs.error.is_some() {
+            Style::default().fg(Color::DarkGray)
+        } else if is_active {
+            Style::default().fg(Color::Cyan)
+        } else if msg.starts_with('✓') {
+            Style::default().fg(Color::Green)
+        } else if msg.starts_with('⚠') {
+            Style::default().fg(Color::Yellow)
+        } else if msg.starts_with('✗') {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::from(Span::styled(display, style)));
+    }
+
+    if let Some(err) = &cs.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            err,
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    let footer = if cs.error.is_some() {
+        Line::from(Span::styled(
+            "Press 'q' to quit",
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "Press 'q' to cancel",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    lines.push(footer);
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
 }

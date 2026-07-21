@@ -1,8 +1,57 @@
 use std::error::Error;
+use std::sync::mpsc;
 
 use postgres::NoTls;
 
 use crate::driver::{collect_active_filters, ColumnType, DbDriver, FilterOp, ForeignKeyInfo, TableInfo};
+
+/// Try TLS first, fall back to plaintext.
+/// Sends human-readable progress messages through `status_tx` when provided.
+pub fn connect_with_tls_fallback(
+    conn_str: &str,
+    status_tx: Option<&mpsc::Sender<String>>,
+) -> Result<postgres::Client, Box<dyn Error>> {
+    let send = |msg: &str| {
+        if let Some(tx) = status_tx {
+            let _ = tx.send(msg.to_string());
+        }
+    };
+
+    send("Resolving host…");
+    send("Connecting to host…");
+
+    let client = match native_tls::TlsConnector::new() {
+        Ok(tls_connector) => {
+            send("Negotiating TLS…");
+            let tls = postgres_native_tls::MakeTlsConnector::new(tls_connector);
+            match postgres::Client::connect(conn_str, tls) {
+                Ok(c) => {
+                    send("✓ TLS established");
+                    send("✓ Authenticated");
+                    send("✓ Ready");
+                    return Ok(c);
+                }
+                Err(_) => {
+                    send("⚠ TLS unavailable");
+                    send("Falling back to plaintext…");
+                    let c = postgres::Client::connect(conn_str, NoTls)?;
+                    send("✓ Authenticated");
+                    send("✓ Ready");
+                    c
+                }
+            }
+        }
+        Err(_) => {
+            send("TLS not available");
+            send("Connecting without encryption…");
+            let c = postgres::Client::connect(conn_str, NoTls)?;
+            send("✓ Authenticated");
+            send("✓ Ready");
+            c
+        }
+    };
+    Ok(client)
+}
 
 fn parse_table_name(name: &str) -> (&str, &str) {
     if let Some(dot) = name.find('.') {
@@ -43,7 +92,7 @@ pub struct PostgresDriver {
 
 impl PostgresDriver {
     pub fn new(connection_string: &str) -> Result<Self, Box<dyn Error>> {
-        let client = postgres::Client::connect(connection_string, NoTls)?;
+        let client = connect_with_tls_fallback(connection_string, None)?;
         Ok(Self { client })
     }
 
