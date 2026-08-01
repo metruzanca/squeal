@@ -8,7 +8,7 @@ description = "A lightweight TUI SQLite database viewer built in Rust."
 repository = "https://github.com/metruzanca/squeal"
 keywords = ["sqlite", "tui", "database", "viewer", "cli"]
 categories = ["command-line-utilities", "database"]
-rust-version = "1.85"
+rust-version = "1.96"
 
 [dependencies]
 crossterm = "0.29"
