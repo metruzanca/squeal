@@ -355,6 +355,63 @@ impl App {
         Ok(app)
     }
 
+    /// Reset the transient view state (filters, sort, scroll, cursor, overlays)
+    /// that must be cleared whenever the displayed data changes.
+    fn reset_view_state(&mut self) {
+        self.filters = vec![None; self.headers.len()];
+        self.filter_mode = FilterMode::None;
+        self.filter_col = 0;
+        self.sort_col = None;
+        self.sort_asc = true;
+        self.temp_filter_op = FilterOp::Equals;
+        self.temp_filter_value = String::new();
+        self.h_scroll = 0;
+        self.scroll_offset = 0;
+        self.close_modal();
+        self.close_peak();
+        self.query_error = None;
+        self.table_switch_time = Instant::now();
+        self.reset_table_selection();
+    }
+
+    /// Move the table cursor to the first row when focused, or reset it.
+    fn reset_table_selection(&mut self) {
+        if self.table_focused && !self.rows.is_empty() {
+            self.table_state = TableState::new().with_selected(Some(0));
+        } else {
+            self.table_state = TableState::new();
+        }
+    }
+
+    /// Apply freshly fetched table data and reset all dependent view state.
+    /// Populates the navigation cache so re-visiting the table is instant.
+    fn apply_table_data(
+        &mut self,
+        index: usize,
+        headers: Vec<String>,
+        column_types: Vec<ColumnType>,
+        rows: Vec<Vec<String>>,
+        has_more_rows: bool,
+    ) {
+        self.is_loading = false;
+        self.is_query_view = false;
+        self.query_edit_mode = false;
+        self.headers = headers;
+        self.column_types = column_types;
+        self.rows = rows;
+        self.has_more_rows = has_more_rows;
+        self.reset_view_state();
+        self.cached_pages.insert(
+            index,
+            CachedTable {
+                headers: self.headers.clone(),
+                column_types: self.column_types.clone(),
+                rows: self.rows.clone(),
+                has_more_rows,
+            },
+        );
+    }
+
     pub fn load_table(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
         if index >= self.tables.len() {
             return Ok(());
@@ -373,28 +430,13 @@ impl App {
 
         // Check cache for instant navigation
         if let Some(cached) = self.cached_pages.get(&index) {
-            self.headers = cached.headers.clone();
-            self.column_types = cached.column_types.clone();
-            self.rows = cached.rows.clone();
-            self.has_more_rows = cached.has_more_rows;
-            self.filters = vec![None; self.headers.len()];
-            self.filter_mode = FilterMode::None;
-            self.filter_col = 0;
-            self.sort_col = None;
-            self.sort_asc = true;
-            self.temp_filter_op = FilterOp::Equals;
-            self.temp_filter_value = String::new();
-            self.h_scroll = 0;
-            self.scroll_offset = 0;
-            self.close_modal();
-            self.close_peak();
-            self.query_error = None;
-            self.table_switch_time = Instant::now();
-            if self.table_focused && !self.rows.is_empty() {
-                self.table_state = TableState::new().with_selected(Some(0));
-            } else {
-                self.table_state = TableState::new();
-            }
+            self.apply_table_data(
+                index,
+                cached.headers.clone(),
+                cached.column_types.clone(),
+                cached.rows.clone(),
+                cached.has_more_rows,
+            );
             return Ok(());
         }
 
@@ -403,46 +445,12 @@ impl App {
         let headers = self.driver.table_columns(&table_ident)?;
         let column_types = self.driver.table_column_types(&table_ident)?;
 
-        // Set headers and reset filter state before fetching
-        self.headers = headers.clone();
-        self.column_types = column_types.clone();
-        self.filters = vec![None; self.headers.len()];
-        self.filter_mode = FilterMode::None;
-        self.filter_col = 0;
-        self.sort_col = None;
-        self.sort_asc = true;
-        self.temp_filter_op = FilterOp::Equals;
-        self.temp_filter_value = String::new();
-
         let rows = self
             .driver
-            .fetch_rows(&table_ident, &self.headers, &self.filters, None, true, 0, 100)?;
+            .fetch_rows(&table_ident, &headers, &vec![None; headers.len()], None, true, 0, 100)?;
 
         let has_more = rows.len() == 100;
-        self.rows = rows.clone();
-        self.has_more_rows = has_more;
-        self.h_scroll = 0;
-        self.scroll_offset = 0;
-        self.close_modal();
-        self.close_peak();
-        self.query_error = None;
-        self.table_switch_time = Instant::now();
-        if self.table_focused && !self.rows.is_empty() {
-            self.table_state = TableState::new().with_selected(Some(0));
-        } else {
-            self.table_state = TableState::new();
-        }
-
-        // Populate cache
-        self.cached_pages.insert(
-            index,
-            CachedTable {
-                headers,
-                column_types,
-                rows,
-                has_more_rows: has_more,
-            },
-        );
+        self.apply_table_data(index, headers, column_types, rows, has_more);
 
         Ok(())
     }
@@ -529,29 +537,13 @@ impl App {
 
                 // Check cache first — instant navigation for recently viewed tables
                 if let Some(cached) = self.cached_pages.get(&index) {
-                    self.headers = cached.headers.clone();
-                    self.column_types = cached.column_types.clone();
-                    self.rows = cached.rows.clone();
-                    self.has_more_rows = cached.has_more_rows;
-                    self.filters = vec![None; self.headers.len()];
-                    self.filter_mode = FilterMode::None;
-                    self.filter_col = 0;
-                    self.sort_col = None;
-                    self.sort_asc = true;
-                    self.temp_filter_op = FilterOp::Equals;
-                    self.temp_filter_value = String::new();
-                    self.h_scroll = 0;
-                    self.scroll_offset = 0;
-                    self.close_modal();
-                    self.close_peak();
-                    self.query_error = None;
-                    self.table_switch_time = Instant::now();
-                    self.is_loading = false;
-                    if self.table_focused && !self.rows.is_empty() {
-                        self.table_state = TableState::new().with_selected(Some(0));
-                    } else {
-                        self.table_state = TableState::new();
-                    }
+                    self.apply_table_data(
+                        index,
+                        cached.headers.clone(),
+                        cached.column_types.clone(),
+                        cached.rows.clone(),
+                        cached.has_more_rows,
+                    );
                     return Ok(());
                 }
 
@@ -560,17 +552,7 @@ impl App {
                 self.column_types.clear();
                 self.rows.clear();
                 self.has_more_rows = false;
-                self.filters = Vec::new();
-                self.filter_mode = FilterMode::None;
-                self.filter_col = 0;
-                self.sort_col = None;
-                self.sort_asc = true;
-                self.h_scroll = 0;
-                self.scroll_offset = 0;
-                self.close_modal();
-                self.close_peak();
-                self.query_error = None;
-                self.table_state = TableState::new();
+                self.reset_view_state();
 
                 if let Some(ref tx) = self.bg_tx {
                     self.is_loading = true;
@@ -621,41 +603,7 @@ impl App {
                     if self.current_table_index() != Some(index) {
                         continue;
                     }
-                    self.is_loading = false;
-                    self.is_query_view = false;
-                    self.query_edit_mode = false;
-                    self.headers = headers.clone();
-                    self.column_types = column_types.clone();
-                    self.rows = rows.clone();
-                    self.has_more_rows = has_more_rows;
-                    self.filters = vec![None; self.headers.len()];
-                    self.filter_mode = FilterMode::None;
-                    self.filter_col = 0;
-                    self.sort_col = None;
-                    self.sort_asc = true;
-                    self.h_scroll = 0;
-                    self.scroll_offset = 0;
-                    self.close_modal();
-                    self.close_peak();
-                    self.query_error = None;
-                    self.temp_filter_op = FilterOp::Equals;
-                    self.temp_filter_value = String::new();
-                    self.table_switch_time = Instant::now();
-                    if self.table_focused && !self.rows.is_empty() {
-                        self.table_state = TableState::new().with_selected(Some(0));
-                    } else {
-                        self.table_state = TableState::new();
-                    }
-                    // Populate cache
-                    self.cached_pages.insert(
-                        index,
-                        CachedTable {
-                            headers,
-                            column_types,
-                            rows,
-                            has_more_rows,
-                        },
-                    );
+                    self.apply_table_data(index, headers, column_types, rows, has_more_rows);
                 }
                 BgResult::Error(_err) => {
                     self.is_loading = false;
@@ -1193,11 +1141,7 @@ impl App {
         )?;
         self.has_more_rows = self.rows.len() == 100;
         self.scroll_offset = 0;
-        if self.table_focused && !self.rows.is_empty() {
-            self.table_state = TableState::new().with_selected(Some(0));
-        } else {
-            self.table_state = TableState::new();
-        }
+        self.reset_table_selection();
         Ok(())
     }
 
@@ -1205,7 +1149,7 @@ impl App {
         if self.all_rows.is_empty() {
             self.rows = Vec::new();
             self.scroll_offset = 0;
-            self.table_state = TableState::new();
+            self.reset_table_selection();
             return Ok(());
         }
 
@@ -1263,11 +1207,7 @@ impl App {
 
         self.rows = rows;
         self.scroll_offset = 0;
-        if self.table_focused && !self.rows.is_empty() {
-            self.table_state = TableState::new().with_selected(Some(0));
-        } else {
-            self.table_state = TableState::new();
-        }
+        self.reset_table_selection();
         Ok(())
     }
 
@@ -1359,22 +1299,10 @@ impl App {
         self.rows = rows;
 
         self.has_more_rows = false;
-        self.h_scroll = 0;
-        self.scroll_offset = 0;
-        self.table_state = TableState::new();
-        if self.table_focused && !self.rows.is_empty() {
-            self.table_state = TableState::new().with_selected(Some(0));
-        }
         // Clear filters/sort when query is re-run
         self.all_rows = self.rows.clone();
-        self.filters = vec![None; self.headers.len()];
         self.column_types = vec![ColumnType::String; self.headers.len()];
-        self.filter_mode = FilterMode::None;
-        self.filter_col = 0;
-        self.sort_col = None;
-        self.sort_asc = true;
-        self.temp_filter_op = FilterOp::Equals;
-        self.temp_filter_value = String::new();
+        self.reset_view_state();
 
         Ok(())
     }
@@ -1509,21 +1437,30 @@ impl App {
 
         self.queries.push(query);
         self.rebuild_sidebar();
+
+        self.is_query_view = true;
+        self.query_edit_mode = true;
+        self.reset_query_view();
+    }
+
+    /// Clear the query editor and result view state when starting a fresh query.
+    fn reset_query_view(&mut self) {
         self.query_text = String::new();
         self.query_cursor = 0;
         self.query_scroll = 0;
-        self.is_query_view = true;
-        self.query_edit_mode = true;
         self.headers = Vec::new();
         self.rows = Vec::new();
-        self.table_focused = true;
-        self.table_state = TableState::new();
-        self.h_scroll = 0;
-        self.scroll_offset = 0;
+        self.column_types = Vec::new();
+        self.all_rows = Vec::new();
         self.filters = Vec::new();
+        self.filter_mode = FilterMode::None;
         self.sort_col = None;
         self.sort_asc = true;
-        self.filter_mode = FilterMode::None;
+        self.h_scroll = 0;
+        self.scroll_offset = 0;
+        self.table_focused = true;
+        self.table_state = TableState::new();
+        self.query_error = None;
     }
 
     pub fn delete_current_query(&mut self) {

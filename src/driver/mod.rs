@@ -106,6 +106,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_sqlite_value_to_string_real() {
         assert_eq!(sqlite_value_to_string(&rusqlite::types::Value::Real(3.14)), "3.14");
     }
