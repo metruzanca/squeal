@@ -49,7 +49,7 @@ pub enum FilterOp {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ForeignKeyInfo {
-    pub id: i32,
+    pub id: u32,
     pub seq: i32,
     pub table: String,
     pub from: String,

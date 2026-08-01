@@ -206,7 +206,7 @@ impl DbDriver for SQLiteDriver {
         let rows = stmt
             .query_map([], |row| {
                 Ok(ForeignKeyInfo {
-                    id: row.get(0)?,
+                    id: row.get::<_, u32>(0)?,
                     seq: row.get(1)?,
                     table: row.get(2)?,
                     from: row.get(3)?,
